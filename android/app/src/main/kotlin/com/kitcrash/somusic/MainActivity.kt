@@ -26,6 +26,7 @@ import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
@@ -35,6 +36,14 @@ class MainActivity : ComponentActivity() {
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
+
+    // Dedicated client for audio streaming: infinite read timeout so songs never stall mid-play
+    private val streamClient = client.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    // Cache resolved audio stream URLs to avoid re-resolving Invidious on every range chunk
+    private val streamUrlCache = ConcurrentHashMap<String, String>()
 
     private val assetLoader by lazy {
         WebViewAssetLoader.Builder()
@@ -268,7 +277,13 @@ class MainActivity : ComponentActivity() {
                                             ?.optJSONObject("text")
                                             ?.optJSONArray("runs")
                                         if (col1 != null && col1.length() > 0) {
-                                            artist = col1.getJSONObject(0).optString("text")
+                                            // Handle cases where runs[0] is type like "Song", "Video", "EP", "Single"
+                                            val firstText = col1.getJSONObject(0).optString("text")
+                                            if (listOf("Song", "Video", "Single", "EP", "Audio").contains(firstText) && col1.length() > 2) {
+                                                artist = col1.getJSONObject(2).optString("text")
+                                            } else {
+                                                artist = firstText
+                                            }
                                         }
                                     }
 
@@ -294,7 +309,7 @@ class MainActivity : ComponentActivity() {
                                         val song = JSONObject().apply {
                                             put("id", videoId)
                                             put("title", title)
-                                            put("artist", if (artist.isNotEmpty()) artist else "Unknown Artist")
+                                            put("artist", if (artist.isNotEmpty() && artist != "Song") artist else "Temper City")
                                             put("duration", 0)
                                             put("thumb", thumb)
                                             put("isVideo", false)
@@ -488,6 +503,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleStreamProxy(trackId: String, rangeHeader: String?): WebResourceResponse? {
+        // 1. Try cached stream URL first if available
+        val cachedUrl = streamUrlCache[trackId]
+        if (!cachedUrl.isNullOrEmpty()) {
+            val response = executeStreamRequest(cachedUrl, rangeHeader)
+            if (response != null) return response
+            streamUrlCache.remove(trackId)
+        }
+
+        // 2. Resolve via mirrors
         val mirrors = listOf(
             "https://yt.chocolatemoo53.com/api/v1/videos/$trackId",
             "https://invidious.nerdvpn.de/api/v1/videos/$trackId",
@@ -535,29 +559,9 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (streamUrl.isNotEmpty()) {
-                        val streamReqBuilder = Request.Builder().url(streamUrl)
-                        if (!rangeHeader.isNullOrEmpty()) {
-                            streamReqBuilder.header("Range", rangeHeader)
-                        }
-                        val streamRes = client.newCall(streamReqBuilder.build()).execute()
-                        val responseHeaders = mutableMapOf<String, String>()
-                        responseHeaders["Access-Control-Allow-Origin"] = "*"
-                        responseHeaders["Accept-Ranges"] = "bytes"
-                        streamRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
-                        streamRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
-
-                        val mime = streamRes.header("Content-Type") ?: "audio/webm"
-                        val statusCode = streamRes.code
-                        val statusMsg = if (statusCode == 206) "Partial Content" else "OK"
-
-                        return WebResourceResponse(
-                            mime,
-                            "identity",
-                            statusCode,
-                            statusMsg,
-                            responseHeaders,
-                            streamRes.body?.byteStream()
-                        )
+                        streamUrlCache[trackId] = streamUrl
+                        val response = executeStreamRequest(streamUrl, rangeHeader)
+                        if (response != null) return response
                     }
                 }
             } catch (e: Exception) {
@@ -567,52 +571,112 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    private fun executeStreamRequest(streamUrl: String, rangeHeader: String?): WebResourceResponse? {
+        try {
+            val streamReqBuilder = Request.Builder().url(streamUrl)
+            if (!rangeHeader.isNullOrEmpty()) {
+                streamReqBuilder.header("Range", rangeHeader)
+            }
+            val streamRes = streamClient.newCall(streamReqBuilder.build()).execute()
+            if (!streamRes.isSuccessful && streamRes.code != 206) {
+                return null
+            }
+
+            val responseHeaders = mutableMapOf<String, String>()
+            responseHeaders["Access-Control-Allow-Origin"] = "*"
+            responseHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            responseHeaders["Access-Control-Allow-Headers"] = "Range, Content-Type, Authorization"
+            responseHeaders["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+            responseHeaders["Accept-Ranges"] = "bytes"
+            streamRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
+            streamRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
+
+            val rawMime = streamRes.header("Content-Type") ?: "audio/webm"
+            val cleanMime = rawMime.substringBefore(";").trim()
+            val statusCode = streamRes.code
+            val statusMsg = if (statusCode == 206) "Partial Content" else "OK"
+
+            // CRITICAL: encoding MUST be null for raw binary audio data
+            return WebResourceResponse(
+                cleanMime,
+                null,
+                statusCode,
+                statusMsg,
+                responseHeaders,
+                streamRes.body?.byteStream()
+            )
+        } catch (e: Exception) {
+            Log.w("SoMusic", "Stream fetch failed: ${e.message}")
+            return null
+        }
+    }
+
     private fun fetchLyrics(title: String, artist: String): WebResourceResponse {
+        // 1. Try exact match
         try {
             val encTitle = URLEncoder.encode(title, "UTF-8")
             val encArtist = URLEncoder.encode(artist, "UTF-8")
             val url = "https://lrclib.net/api/get?track_name=$encTitle&artist_name=$encArtist"
 
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", "SoMusic/1.0 (Android)")
-                .build()
-
+            val req = Request.Builder().url(url).header("User-Agent", "SoMusic/1.0").build()
             val res = client.newCall(req).execute()
             if (res.isSuccessful) {
-                val body = res.body?.string() ?: ""
-                val json = JSONObject(body)
-                val synced = json.optString("syncedLyrics", "")
-                val plain = json.optString("plainLyrics", "")
-
-                val out = JSONObject()
-                out.put("plain", if (plain.isNotEmpty()) plain else null)
-                out.put("source", "LRCLIB")
-                out.put("wordSynced", false)
-
-                if (synced.isNotEmpty()) {
-                    val lines = JSONArray()
-                    synced.split("\n").forEach { line ->
-                        val match = Regex("""\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)""").find(line)
-                        if (match != null) {
-                            val (min, sec, ms, text) = match.destructured
-                            val time = min.toInt() * 60 + sec.toInt() + ms.toDouble() / (if (ms.length == 2) 100 else 1000)
-                            val lineObj = JSONObject()
-                            lineObj.put("time", time)
-                            lineObj.put("text", text.trim())
-                            lines.put(lineObj)
-                        }
-                    }
-                    out.put("synced", lines)
-                } else {
-                    out.put("synced", null)
-                }
-                return createJsonResponse(out.toString())
+                val parsed = parseLrcResponse(res.body?.string() ?: "")
+                if (parsed != null) return createJsonResponse(parsed.toString())
             }
         } catch (e: Exception) {
-            Log.w("SoMusic", "Lyrics error: ${e.message}")
+            Log.w("SoMusic", "Exact lyrics failed: ${e.message}")
         }
+
+        // 2. Fallback to search
+        try {
+            val encTitle = URLEncoder.encode(title, "UTF-8")
+            val searchUrl = "https://lrclib.net/api/search?q=$encTitle"
+            val req = Request.Builder().url(searchUrl).header("User-Agent", "SoMusic/1.0").build()
+            val res = client.newCall(req).execute()
+            if (res.isSuccessful) {
+                val list = JSONArray(res.body?.string() ?: "[]")
+                if (list.length() > 0) {
+                    val parsed = parseLrcResponse(list.getJSONObject(0).toString())
+                    if (parsed != null) return createJsonResponse(parsed.toString())
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SoMusic", "Search lyrics failed: ${e.message}")
+        }
+
         return createJsonResponse("""{"synced":null,"plain":null,"source":null}""")
+    }
+
+    private fun parseLrcResponse(body: String): JSONObject? {
+        if (body.isEmpty()) return null
+        val json = JSONObject(body)
+        val synced = json.optString("syncedLyrics", "")
+        val plain = json.optString("plainLyrics", "")
+
+        val out = JSONObject()
+        out.put("plain", if (plain.isNotEmpty()) plain else null)
+        out.put("source", "LRCLIB")
+        out.put("wordSynced", false)
+
+        if (synced.isNotEmpty()) {
+            val lines = JSONArray()
+            synced.split("\n").forEach { line ->
+                val match = Regex("""\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)""").find(line)
+                if (match != null) {
+                    val (min, sec, ms, text) = match.destructured
+                    val time = min.toInt() * 60 + sec.toInt() + ms.toDouble() / (if (ms.length == 2) 100 else 1000)
+                    val lineObj = JSONObject()
+                    lineObj.put("time", time)
+                    lineObj.put("text", text.trim())
+                    lines.put(lineObj)
+                }
+            }
+            out.put("synced", lines)
+        } else {
+            out.put("synced", null)
+        }
+        return out
     }
 
     private fun createJsonResponse(json: String): WebResourceResponse {
