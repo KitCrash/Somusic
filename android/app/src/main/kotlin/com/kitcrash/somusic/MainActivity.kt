@@ -21,6 +21,8 @@ import androidx.webkit.WebViewAssetLoader
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -138,29 +140,44 @@ class MainActivity : ComponentActivity() {
             val uri = android.net.Uri.parse(urlStr)
             val path = uri.path ?: ""
 
-            // Auth session
+            // 1. Auth session
             if (path == "/api/auth/session") {
                 val json = """{"mode":"guest","userId":"guest-user","username":"Guest","displayName":"Music Lover","freshInstall":false,"needsUsername":false}"""
                 return createJsonResponse(json)
             }
 
-            // Audio Stream Proxy with Range support
+            // 2. Search Page & Search
+            if (path == "/api/music/searchPage" || path == "/api/music/search") {
+                return handleSearchRequest(uri)
+            }
+
+            // 3. Search Suggestions
+            if (path == "/api/music/suggestions") {
+                val q = uri.getQueryParameter("q") ?: ""
+                return handleSuggestionsRequest(q)
+            }
+
+            // 4. Moods & Genres
+            if (path == "/api/music/moods") {
+                return handleMoodsRequest()
+            }
+
+            // 5. Home Feed
+            if (path == "/api/music/home") {
+                return handleHomeRequest()
+            }
+
+            // 6. Audio Stream Proxy with Range support
             if (path == "/api/stream") {
                 val trackId = uri.getQueryParameter("id") ?: return null
                 return handleStreamProxy(trackId, request.requestHeaders["Range"])
             }
 
-            // Synced lyrics from LRCLIB
+            // 7. Synced lyrics from LRCLIB
             if (path == "/api/music/lyrics") {
                 val title = uri.getQueryParameter("title") ?: ""
                 val artist = uri.getQueryParameter("artist") ?: ""
                 return fetchLyrics(title, artist)
-            }
-
-            // Search fallback / forwarder
-            if (path == "/api/music/search") {
-                val q = uri.getQueryParameter("q") ?: ""
-                return searchPipedOrYTM(q)
             }
         } catch (e: Exception) {
             Log.e("SoMusic", "API intercept error: ${e.message}", e)
@@ -168,61 +185,302 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    private fun handleSearchRequest(url: android.net.Uri): WebResourceResponse {
+        val query = url.getQueryParameter("q") ?: ""
+        val filter = url.getQueryParameter("filter") ?: "all"
+
+        if (query.isBlank()) {
+            return createJsonResponse("""{"rows":[],"continuation":null}""")
+        }
+
+        val filterParam = when (filter) {
+            "songs" -> "EgWKAQIIAWoKEAkQChAFEAMQBA=="
+            "videos" -> "EgWKAQIQAWoKEAkQChAFEAMQBA=="
+            "albums" -> "EgWKAQIYAWoKEAkQChAFEAMQBA=="
+            "artists" -> "EgWKAQIgAWoKEAkQChAFEAMQBA=="
+            "playlists" -> "EgWKAQIoAWoKEAkQChAFEAMQBA=="
+            else -> null
+        }
+
+        try {
+            val payload = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240722.01.00")
+                        put("hl", "en")
+                        put("gl", "US")
+                    })
+                })
+                put("query", query)
+                if (filterParam != null) {
+                    put("params", filterParam)
+                }
+            }
+
+            val reqBody = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+
+            val req = Request.Builder()
+                .url("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20240722.01.00")
+                .header("Origin", "https://music.youtube.com")
+                .post(reqBody)
+                .build()
+
+            val res = client.newCall(req).execute()
+            if (res.isSuccessful) {
+                val resBody = res.body?.string() ?: ""
+                val json = JSONObject(resBody)
+                val rows = JSONArray()
+                val seenIds = mutableSetOf<String>()
+
+                fun extract(obj: Any?) {
+                    when (obj) {
+                        is JSONObject -> {
+                            if (obj.has("musicResponsiveListItemRenderer")) {
+                                val item = obj.getJSONObject("musicResponsiveListItemRenderer")
+                                val flexCols = item.optJSONArray("flexColumns")
+                                if (flexCols != null && flexCols.length() > 0) {
+                                    val col0 = flexCols.getJSONObject(0)
+                                        .optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                                        ?.optJSONObject("text")
+                                        ?.optJSONArray("runs")
+                                    val title = if (col0 != null && col0.length() > 0) {
+                                        col0.getJSONObject(0).optString("text")
+                                    } else ""
+
+                                    var artist = ""
+                                    if (flexCols.length() > 1) {
+                                        val col1 = flexCols.getJSONObject(1)
+                                            .optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                                            ?.optJSONObject("text")
+                                            ?.optJSONArray("runs")
+                                        if (col1 != null && col1.length() > 0) {
+                                            artist = col1.getJSONObject(0).optString("text")
+                                        }
+                                    }
+
+                                    var videoId = item.optJSONObject("playlistItemData")?.optString("videoId") ?: ""
+                                    if (videoId.isEmpty() && col0 != null && col0.length() > 0) {
+                                        videoId = col0.getJSONObject(0)
+                                            .optJSONObject("navigationEndpoint")
+                                            ?.optJSONObject("watchEndpoint")
+                                            ?.optString("videoId") ?: ""
+                                    }
+
+                                    var thumb = ""
+                                    val thumbs = item.optJSONObject("thumbnail")
+                                        ?.optJSONObject("musicThumbnailRenderer")
+                                        ?.optJSONObject("thumbnail")
+                                        ?.optJSONArray("thumbnails")
+                                    if (thumbs != null && thumbs.length() > 0) {
+                                        thumb = thumbs.getJSONObject(thumbs.length() - 1).optString("url")
+                                    }
+
+                                    if (title.isNotEmpty() && videoId.isNotEmpty() && !seenIds.contains(videoId)) {
+                                        seenIds.add(videoId)
+                                        val song = JSONObject().apply {
+                                            put("id", videoId)
+                                            put("title", title)
+                                            put("artist", if (artist.isNotEmpty()) artist else "Unknown Artist")
+                                            put("duration", 0)
+                                            put("thumb", thumb)
+                                            put("isVideo", false)
+                                        }
+                                        val row = JSONObject().apply {
+                                            put("kind", if (rows.length() == 0 && filter == "all") "top" else "track")
+                                            put("song", song)
+                                        }
+                                        rows.put(row)
+                                    }
+                                }
+                            }
+                            val keys = obj.keys()
+                            while (keys.hasNext()) {
+                                extract(obj.get(keys.next()))
+                            }
+                        }
+                        is JSONArray -> {
+                            for (i in 0 until obj.length()) {
+                                extract(obj.get(i))
+                            }
+                        }
+                    }
+                }
+
+                extract(json)
+
+                val result = JSONObject().apply {
+                    put("rows", rows)
+                    put("continuation", null)
+                }
+                return createJsonResponse(result.toString())
+            }
+        } catch (e: Exception) {
+            Log.e("SoMusic", "Search error: ${e.message}", e)
+        }
+
+        return createJsonResponse("""{"rows":[],"continuation":null}""")
+    }
+
+    private fun handleSuggestionsRequest(query: String): WebResourceResponse {
+        if (query.isBlank()) {
+            return createJsonResponse("""{"items":[]}""")
+        }
+
+        try {
+            val payload = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240722.01.00")
+                        put("hl", "en")
+                        put("gl", "US")
+                    })
+                })
+                put("input", query)
+            }
+
+            val reqBody = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+
+            val req = Request.Builder()
+                .url("https://music.youtube.com/youtubei/v1/music/get_search_suggestions")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20240722.01.00")
+                .header("Origin", "https://music.youtube.com")
+                .post(reqBody)
+                .build()
+
+            val res = client.newCall(req).execute()
+            if (res.isSuccessful) {
+                val resBody = res.body?.string() ?: ""
+                val json = JSONObject(resBody)
+                val items = JSONArray()
+
+                val contents = json.optJSONArray("contents")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("searchSuggestionsSectionRenderer")
+                    ?.optJSONArray("contents")
+
+                if (contents != null) {
+                    for (i in 0 until contents.length()) {
+                        val runs = contents.getJSONObject(i)
+                            .optJSONObject("searchSuggestionRenderer")
+                            ?.optJSONObject("suggestion")
+                            ?.optJSONArray("runs")
+                        if (runs != null && runs.length() > 0) {
+                            val text = StringBuilder()
+                            for (j in 0 until runs.length()) {
+                                text.append(runs.getJSONObject(j).optString("text"))
+                            }
+                            items.put(text.toString())
+                        }
+                    }
+                }
+                val out = JSONObject().apply { put("items", items) }
+                return createJsonResponse(out.toString())
+            }
+        } catch (e: Exception) {
+            Log.e("SoMusic", "Suggestions error: ${e.message}", e)
+        }
+        return createJsonResponse("""{"items":[]}""")
+    }
+
+    private fun handleMoodsRequest(): WebResourceResponse {
+        val json = """[
+            {"title":"Today's hits","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#E13300"},
+            {"title":"Lo-fi beats","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#4B2AAD"},
+            {"title":"Workout energy","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#D00000"},
+            {"title":"Focus flow","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#023E8A"},
+            {"title":"Rock classics","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#370617"},
+            {"title":"Jazz evenings","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#2B2D42"},
+            {"title":"Pop hits","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#C9184A"},
+            {"title":"Chill mix","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#2D6A4F"}
+        ]"""
+        return createJsonResponse(json)
+    }
+
+    private fun handleHomeRequest(): WebResourceResponse {
+        val json = """{"sections":[{"id":"quick_picks","title":"Quick picks","subtitle":"Start listening","layout":"tiles","items":[]}]}"""
+        return createJsonResponse(json)
+    }
+
     private fun handleStreamProxy(trackId: String, rangeHeader: String?): WebResourceResponse? {
-        // Query Piped/InnerTube stream URL
-        val pipedMirrors = listOf(
+        val endpoints = listOf(
+            "https://yt.chocolatemoo53.com/api/v1/videos/$trackId",
             "https://pipedapi.kavin.rocks/streams/$trackId",
-            "https://pipedapi.adminforge.de/streams/$trackId",
-            "https://api.piped.private.coffee/streams/$trackId"
+            "https://pipedapi.adminforge.de/streams/$trackId"
         )
 
-        for (endpoint in pipedMirrors) {
+        for (endpoint in endpoints) {
             try {
                 val req = Request.Builder()
                     .url(endpoint)
-                    .header("User-Agent", "Mozilla/5.0 (Android; Mobile)")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                     .build()
                 val res = client.newCall(req).execute()
                 if (res.isSuccessful) {
                     val body = res.body?.string() ?: continue
                     val json = JSONObject(body)
-                    val audioStreams = json.optJSONArray("audioStreams") ?: continue
-                    if (audioStreams.length() > 0) {
-                        var streamUrl = audioStreams.getJSONObject(0).optString("url")
-                        // Prefer m4a/aac
-                        for (i in 0 until audioStreams.length()) {
-                            val s = audioStreams.getJSONObject(i)
-                            if (s.optString("mimeType").contains("mp4") || s.optString("mimeType").contains("aac")) {
-                                streamUrl = s.optString("url")
+
+                    var streamUrl = ""
+                    val adaptiveFormats = json.optJSONArray("adaptiveFormats")
+                    if (adaptiveFormats != null) {
+                        for (i in 0 until adaptiveFormats.length()) {
+                            val f = adaptiveFormats.getJSONObject(i)
+                            val type = f.optString("type")
+                            if (type.startsWith("audio/")) {
+                                streamUrl = f.optString("url")
                                 break
                             }
                         }
+                    }
 
-                        if (streamUrl.isNotEmpty()) {
-                            val streamReqBuilder = Request.Builder().url(streamUrl)
-                            if (!rangeHeader.isNullOrEmpty()) {
-                                streamReqBuilder.header("Range", rangeHeader)
+                    if (streamUrl.isEmpty()) {
+                        val audioStreams = json.optJSONArray("audioStreams")
+                        if (audioStreams != null && audioStreams.length() > 0) {
+                            for (i in 0 until audioStreams.length()) {
+                                val s = audioStreams.getJSONObject(i)
+                                if (s.optString("mimeType").contains("mp4") || s.optString("mimeType").contains("aac")) {
+                                    streamUrl = s.optString("url")
+                                    break
+                                }
                             }
-                            val streamRes = client.newCall(streamReqBuilder.build()).execute()
-                            val responseHeaders = mutableMapOf<String, String>()
-                            responseHeaders["Access-Control-Allow-Origin"] = "*"
-                            responseHeaders["Accept-Ranges"] = "bytes"
-                            streamRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
-                            streamRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
-
-                            val mime = streamRes.header("Content-Type") ?: "audio/mp4"
-                            val statusCode = streamRes.code
-                            val statusMsg = if (statusCode == 206) "Partial Content" else "OK"
-
-                            return WebResourceResponse(
-                                mime,
-                                "identity",
-                                statusCode,
-                                statusMsg,
-                                responseHeaders,
-                                streamRes.body?.byteStream()
-                            )
+                            if (streamUrl.isEmpty()) {
+                                streamUrl = audioStreams.getJSONObject(0).optString("url")
+                            }
                         }
+                    }
+
+                    if (streamUrl.isNotEmpty()) {
+                        val streamReqBuilder = Request.Builder().url(streamUrl)
+                        if (!rangeHeader.isNullOrEmpty()) {
+                            streamReqBuilder.header("Range", rangeHeader)
+                        }
+                        val streamRes = client.newCall(streamReqBuilder.build()).execute()
+                        val responseHeaders = mutableMapOf<String, String>()
+                        responseHeaders["Access-Control-Allow-Origin"] = "*"
+                        responseHeaders["Accept-Ranges"] = "bytes"
+                        streamRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
+                        streamRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
+
+                        val mime = streamRes.header("Content-Type") ?: "audio/webm"
+                        val statusCode = streamRes.code
+                        val statusMsg = if (statusCode == 206) "Partial Content" else "OK"
+
+                        return WebResourceResponse(
+                            mime,
+                            "identity",
+                            statusCode,
+                            statusMsg,
+                            responseHeaders,
+                            streamRes.body?.byteStream()
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -278,46 +536,6 @@ class MainActivity : ComponentActivity() {
             Log.w("SoMusic", "Lyrics error: ${e.message}")
         }
         return createJsonResponse("""{"synced":null,"plain":null,"source":null}""")
-    }
-
-    private fun searchPipedOrYTM(query: String): WebResourceResponse {
-        try {
-            val encQ = URLEncoder.encode(query, "UTF-8")
-            val url = "https://pipedapi.kavin.rocks/search?q=$encQ&filter=music_songs"
-            val req = Request.Builder().url(url).build()
-            val res = client.newCall(req).execute()
-            if (res.isSuccessful) {
-                val body = res.body?.string() ?: ""
-                val json = JSONObject(body)
-                val items = json.optJSONArray("items") ?: JSONArray()
-
-                val songs = JSONArray()
-                for (i in 0 until items.length()) {
-                    val item = items.getJSONObject(i)
-                    val s = JSONObject()
-                    val id = item.optString("url").replace("/watch?v=", "")
-                    s.put("id", id)
-                    s.put("title", item.optString("title"))
-                    s.put("artist", item.optString("uploaderName"))
-                    s.put("duration", item.optInt("duration", 0))
-                    s.put("thumb", item.optString("thumbnail"))
-                    s.put("isVideo", false)
-                    songs.put(s)
-                }
-
-                val out = JSONObject()
-                out.put("songs", songs)
-                out.put("videos", JSONArray())
-                out.put("albums", JSONArray())
-                out.put("artists", JSONArray())
-                out.put("playlists", JSONArray())
-                out.put("top", null)
-                return createJsonResponse(out.toString())
-            }
-        } catch (e: Exception) {
-            Log.w("SoMusic", "Search error: ${e.message}")
-        }
-        return createJsonResponse("""{"songs":[],"albums":[],"artists":[],"playlists":[]}""")
     }
 
     private fun createJsonResponse(json: String): WebResourceResponse {
