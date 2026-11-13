@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing and builds
+dist/
+dist-electron/
+.test-build/
+.data/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# Android build outputs (except release/somusic.apk)
+android/.gradle/
+android/app/build/
+android/local.properties
+.gradle/
+build/
+*.hprof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
