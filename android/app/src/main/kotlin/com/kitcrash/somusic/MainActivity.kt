@@ -12,9 +12,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
-import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.webkit.WebViewAssetLoader
@@ -48,7 +46,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Native window fitting: decor fits system windows so header never collides with status bar/notch
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.isAppearanceLightStatusBars = false
         insetsController.isAppearanceLightNavigationBars = false
@@ -57,6 +56,7 @@ class MainActivity : ComponentActivity() {
         window.navigationBarColor = Color.BLACK
 
         val rootLayout = FrameLayout(this).apply {
+            fitsSystemWindows = true
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
         }
 
         webView = WebView(this).apply {
+            fitsSystemWindows = false
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -114,14 +115,6 @@ class MainActivity : ComponentActivity() {
         }
 
         rootLayout.addView(webView)
-
-        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { view, insets ->
-            val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
-            val navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
-            view.setPadding(0, statusBars.top, 0, navBars.bottom)
-            insets
-        }
-
         setContentView(rootLayout)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -179,6 +172,20 @@ class MainActivity : ComponentActivity() {
                 val artist = uri.getQueryParameter("artist") ?: ""
                 return fetchLyrics(title, artist)
             }
+
+            // 8. Other music endpoints (safe fallbacks)
+            if (path == "/api/music/searchMore") {
+                return createJsonResponse("""{"rows":[],"continuation":null}""")
+            }
+            if (path == "/api/music/album") {
+                return createJsonResponse("""{"album":null,"tracks":[]}""")
+            }
+            if (path == "/api/music/artist") {
+                return createJsonResponse("""{"artist":null,"topSongs":[],"albums":[],"singles":[]}""")
+            }
+            if (path == "/api/music/playlist" || path == "/api/music/playlistPage") {
+                return createJsonResponse("""{"playlist":null,"tracks":[],"continuation":null}""")
+            }
         } catch (e: Exception) {
             Log.e("SoMusic", "API intercept error: ${e.message}", e)
         }
@@ -193,16 +200,20 @@ class MainActivity : ComponentActivity() {
             return createJsonResponse("""{"rows":[],"continuation":null}""")
         }
 
-        val filterParam = when (filter) {
-            "songs" -> "EgWKAQIIAWoKEAkQChAFEAMQBA=="
-            "videos" -> "EgWKAQIQAWoKEAkQChAFEAMQBA=="
-            "albums" -> "EgWKAQIYAWoKEAkQChAFEAMQBA=="
-            "artists" -> "EgWKAQIgAWoKEAkQChAFEAMQBA=="
-            "playlists" -> "EgWKAQIoAWoKEAkQChAFEAMQBA=="
-            else -> null
-        }
+        val rows = JSONArray()
+        val seenIds = mutableSetOf<String>()
 
+        // 1. Primary: YouTube Music InnerTube search
         try {
+            val filterParam = when (filter) {
+                "songs" -> "EgWKAQIIAWoKEAkQChAFEAMQBA=="
+                "videos" -> "EgWKAQIQAWoKEAkQChAFEAMQBA=="
+                "albums" -> "EgWKAQIYAWoKEAkQChAFEAMQBA=="
+                "artists" -> "EgWKAQIgAWoKEAkQChAFEAMQBA=="
+                "playlists" -> "EgWKAQIoAWoKEAkQChAFEAMQBA=="
+                else -> null
+            }
+
             val payload = JSONObject().apply {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
@@ -234,8 +245,6 @@ class MainActivity : ComponentActivity() {
             if (res.isSuccessful) {
                 val resBody = res.body?.string() ?: ""
                 val json = JSONObject(resBody)
-                val rows = JSONArray()
-                val seenIds = mutableSetOf<String>()
 
                 fun extract(obj: Any?) {
                     when (obj) {
@@ -312,18 +321,61 @@ class MainActivity : ComponentActivity() {
                 }
 
                 extract(json)
-
-                val result = JSONObject().apply {
-                    put("rows", rows)
-                    put("continuation", null)
-                }
-                return createJsonResponse(result.toString())
             }
         } catch (e: Exception) {
-            Log.e("SoMusic", "Search error: ${e.message}", e)
+            Log.w("SoMusic", "YouTube Music search failed: ${e.message}")
         }
 
-        return createJsonResponse("""{"rows":[],"continuation":null}""")
+        // 2. High-resilience fallback: Invidious search if 0 rows found
+        if (rows.length() == 0) {
+            try {
+                val encQuery = URLEncoder.encode(query, "UTF-8")
+                val invReq = Request.Builder()
+                    .url("https://yt.chocolatemoo53.com/api/v1/search?q=$encQuery&type=video")
+                    .header("User-Agent", "Mozilla/5.0")
+                    .build()
+                val invRes = client.newCall(invReq).execute()
+                if (invRes.isSuccessful) {
+                    val invBody = invRes.body?.string() ?: ""
+                    val list = JSONArray(invBody)
+                    for (i in 0 until list.length()) {
+                        val item = list.getJSONObject(i)
+                        val videoId = item.optString("videoId")
+                        val title = item.optString("title")
+                        val author = item.optString("author")
+                        val thumbs = item.optJSONArray("videoThumbnails")
+                        val thumb = if (thumbs != null && thumbs.length() > 0) {
+                            thumbs.getJSONObject(thumbs.length() - 1).optString("url")
+                        } else "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+
+                        if (videoId.isNotEmpty() && title.isNotEmpty() && !seenIds.contains(videoId)) {
+                            seenIds.add(videoId)
+                            val song = JSONObject().apply {
+                                put("id", videoId)
+                                put("title", title)
+                                put("artist", if (author.isNotEmpty()) author else "Unknown Artist")
+                                put("duration", item.optInt("lengthSeconds", 0))
+                                put("thumb", thumb)
+                                put("isVideo", false)
+                            }
+                            val row = JSONObject().apply {
+                                put("kind", if (rows.length() == 0 && filter == "all") "top" else "track")
+                                put("song", song)
+                            }
+                            rows.put(row)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SoMusic", "Fallback search error: ${e.message}")
+            }
+        }
+
+        val result = JSONObject().apply {
+            put("rows", rows)
+            put("continuation", null)
+        }
+        return createJsonResponse(result.toString())
     }
 
     private fun handleSuggestionsRequest(query: String): WebResourceResponse {
@@ -388,36 +440,61 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("SoMusic", "Suggestions error: ${e.message}", e)
         }
+
         return createJsonResponse("""{"items":[]}""")
     }
 
     private fun handleMoodsRequest(): WebResourceResponse {
-        val json = """[
-            {"title":"Today's hits","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#E13300"},
-            {"title":"Lo-fi beats","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#4B2AAD"},
-            {"title":"Workout energy","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#D00000"},
-            {"title":"Focus flow","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#023E8A"},
-            {"title":"Rock classics","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#370617"},
-            {"title":"Jazz evenings","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#2B2D42"},
-            {"title":"Pop hits","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#C9184A"},
-            {"title":"Chill mix","browseId":"FEmusic_moods_and_genres_category","params":null,"color":"#2D6A4F"}
-        ]"""
+        val json = """
+        {
+            "moods": [
+                { "id": "party", "title": "Party", "subtitle": "High energy & upbeat", "color": "#E91E63" },
+                { "id": "focus", "title": "Focus", "subtitle": "Study, work & flow", "color": "#3F51B5" },
+                { "id": "relax", "title": "Relax", "subtitle": "Unwind & chill", "color": "#009688" },
+                { "id": "workout", "title": "Workout", "subtitle": "Cardio & heavy lifts", "color": "#FF5722" },
+                { "id": "sleep", "title": "Sleep", "subtitle": "Deep ambient tones", "color": "#673AB7" },
+                { "id": "romance", "title": "Romance", "subtitle": "Candlelight & love", "color": "#F06292" }
+            ],
+            "genres": [
+                { "id": "pop", "title": "Pop", "color": "#E91E63" },
+                { "id": "hiphop", "title": "Hip-Hop", "color": "#FF9800" },
+                { "id": "rock", "title": "Rock", "color": "#F44336" },
+                { "id": "rnb", "title": "R&B", "color": "#9C27B0" },
+                { "id": "electronic", "title": "Electronic / Dance", "color": "#00BCD4" },
+                { "id": "indie", "title": "Indie & Alternative", "color": "#4CAF50" }
+            ]
+        }
+        """.trimIndent()
         return createJsonResponse(json)
     }
 
     private fun handleHomeRequest(): WebResourceResponse {
-        val json = """{"sections":[{"id":"quick_picks","title":"Quick picks","subtitle":"Start listening","layout":"tiles","items":[]}]}"""
+        val json = """
+        {
+            "sections": [
+                {
+                    "title": "Today's Biggest Hits",
+                    "items": [
+                        { "id": "SWY0v8GfY3o", "title": "Self Aware", "artist": "Temper City", "thumb": "https://i.ytimg.com/vi/SWY0v8GfY3o/hqdefault.jpg" },
+                        { "id": "fJ9rUzIMcZQ", "title": "Bohemian Rhapsody", "artist": "Queen", "thumb": "https://i.ytimg.com/vi/fJ9rUzIMcZQ/hqdefault.jpg" },
+                        { "id": "hT_nvWreIhg", "title": "Counting Stars", "artist": "OneRepublic", "thumb": "https://i.ytimg.com/vi/hT_nvWreIhg/hqdefault.jpg" },
+                        { "id": "kJQP7kiw5Fk", "title": "Despacito", "artist": "Luis Fonsi ft. Daddy Yankee", "thumb": "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg" }
+                    ]
+                }
+            ]
+        }
+        """.trimIndent()
         return createJsonResponse(json)
     }
 
     private fun handleStreamProxy(trackId: String, rangeHeader: String?): WebResourceResponse? {
-        val endpoints = listOf(
+        val mirrors = listOf(
             "https://yt.chocolatemoo53.com/api/v1/videos/$trackId",
-            "https://pipedapi.kavin.rocks/streams/$trackId",
-            "https://pipedapi.adminforge.de/streams/$trackId"
+            "https://invidious.nerdvpn.de/api/v1/videos/$trackId",
+            "https://inv.tux.pizza/api/v1/videos/$trackId"
         )
 
-        for (endpoint in endpoints) {
+        for (endpoint in mirrors) {
             try {
                 val req = Request.Builder()
                     .url(endpoint)
@@ -540,7 +617,11 @@ class MainActivity : ComponentActivity() {
 
     private fun createJsonResponse(json: String): WebResourceResponse {
         val stream = ByteArrayInputStream(json.toByteArray(Charsets.UTF_8))
-        val headers = mapOf("Access-Control-Allow-Origin" to "*")
+        val headers = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Access-Control-Allow-Methods" to "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers" to "Content-Type, Range"
+        )
         return WebResourceResponse("application/json", "UTF-8", 200, "OK", headers, stream)
     }
 }
