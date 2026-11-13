@@ -641,7 +641,7 @@ export function RightRail() {
 
   return (
     <aside
-      className="w-[328px] shrink-0 flex flex-col glass-pill rounded-2xl overflow-hidden"
+      className="hidden lg:flex w-[328px] shrink-0 flex-col glass-pill rounded-2xl overflow-hidden"
       aria-label="Now playing panel"
     >
       {mode === "queue" ? <QueuePanel onClose={closeQueue} /> : mode === "room" ? <RoomPanel onClose={closeQueue} /> : <DetailsBody />}

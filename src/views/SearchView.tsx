@@ -472,6 +472,7 @@ function RecentSearches() {
 
 export function SearchView() {
   const query = useUI((s) => s.searchQuery);
+  const setQuery = useUI((s) => s.setSearchQuery);
   const filter = useUI((s) => s.searchFilter);
   const setFilter = useUI((s) => s.setSearchFilter);
   const pushSearch = useRecents((s) => s.pushSearch);
@@ -598,14 +599,26 @@ export function SearchView() {
 
   if (!trimmed) {
     return (
-      <div className="space-y-10">
+      <div className="space-y-6 md:space-y-10">
+        {/* Mobile search bar */}
+        <div className="md:hidden relative flex items-center">
+          <SearchIcon className="absolute left-3.5 w-5 h-5 text-ink-hi/50 pointer-events-none" />
+          <input
+            type="text"
+            value={query}
+            placeholder="Search songs, artists, albums..."
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full h-11 pl-11 pr-10 rounded-full bg-panel border border-ink-hi/15 text-[15px] text-ink-hi placeholder:text-ink-hi/45 outline-none focus:border-accent transition-all"
+            autoFocus
+          />
+        </div>
         <RecentlyOpened />
         <RecentSearches />
-        <div className="flex flex-col items-center text-center py-16">
+        <div className="flex flex-col items-center text-center py-10 md:py-16">
           <SearchX className="w-10 h-10 text-ink-ghost mb-4" />
-          <div className="text-[15px] font-semibold text-ink-hi">Search ByTune</div>
+          <div className="text-[15px] font-semibold text-ink-hi">Search SoMusic</div>
           <p className="text-[13px] text-ink-dim mt-1.5 max-w-sm leading-relaxed">
-            Find songs, albums, artists and playlists from YouTube Music. Press {isMac ? "⌘F" : "Ctrl+F"} anywhere to jump into search.
+            Find songs, albums, artists and playlists from YouTube Music.
           </p>
         </div>
       </div>
@@ -625,6 +638,27 @@ export function SearchView() {
 
   return (
     <div className="space-y-4">
+      {/* Mobile search input field */}
+      <div className="md:hidden sticky top-0 z-20 -mx-3 px-3 py-2 bg-surface/90 backdrop-blur-md">
+        <div className="relative flex items-center">
+          <SearchIcon className="absolute left-3.5 w-5 h-5 text-ink-hi/50 pointer-events-none" />
+          <input
+            type="text"
+            value={query}
+            placeholder="Search songs, artists, albums..."
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full h-11 pl-11 pr-10 rounded-full bg-panel border border-ink-hi/15 text-[15px] text-ink-hi placeholder:text-ink-hi/45 outline-none focus:border-accent transition-all"
+          />
+          {query.trim() !== "" && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-3 p-1 rounded-full text-ink-hi/60 hover:text-ink-hi"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
       {/* pointer-events-none: rows scrolling under this strip keep their
           hover — only the pills themselves take the pointer. The frosted
           blur band behind them is NOT painted here: it lives at panel level

@@ -382,8 +382,8 @@ export function TopBar() {
        the 12px breathing strip under it (App's shell no longer adds one),
        so its content centres in the full 68px — equal space above and below. */
     <div
-      className={`app-drag relative h-[68px] shrink-0 flex items-center gap-3 chrome-glass z-20 ${
-        isMac ? "pl-[84px]" : "pl-3"
+      className={`app-drag relative h-14 md:h-[68px] shrink-0 flex items-center justify-between gap-2 md:gap-3 chrome-glass z-20 px-3 md:px-4 ${
+        isMac ? "md:pl-[84px]" : ""
       }`}
     >
       {/* Left cluster — brand flush to the edge, then a hairline divider so the
@@ -393,51 +393,53 @@ export function TopBar() {
         <button
           onClick={goHome}
           className="app-no-drag flex items-center gap-2 pl-1 pr-2 h-10 rounded-full hover:bg-ink-hi/[0.06] transition-colors"
-          title="ByTune"
+          title="SoMusic"
         >
           <BrandHeader />
         </button>
-        <div className="mx-1.5 h-6 w-px bg-ink-hi/15" />
-        <button
-          onClick={() => goBack()}
-          title="Go back"
-          aria-label="Go back"
-          disabled={!canBack}
-          className={`app-no-drag w-9 h-9 grid place-items-center rounded-full transition-colors ${
-            canBack
-              ? "text-ink-hi/90 hover:text-ink-hi hover:bg-ink-hi/[0.08]"
-              : "text-ink-hi/30 pointer-events-none"
-          }`}
-        >
-          <ChevronLeft className="w-5 h-5" strokeWidth={2.5} />
-        </button>
-        <button
-          onClick={() => goForward()}
-          title="Go forward"
-          aria-label="Go forward"
-          disabled={!canForward}
-          className={`app-no-drag w-9 h-9 grid place-items-center rounded-full transition-colors ${
-            canForward
-              ? "text-ink-hi/90 hover:text-ink-hi hover:bg-ink-hi/[0.08]"
-              : "text-ink-hi/30 pointer-events-none"
-          }`}
-        >
-          <ChevronRight className="w-5 h-5" strokeWidth={2.5} />
-        </button>
-        <button
-          onClick={refreshCurrentView}
-          title="Refresh"
-          aria-label="Refresh"
-          className="app-no-drag w-9 h-9 grid place-items-center rounded-full text-ink-hi/60 hover:text-ink-hi hover:bg-ink-hi/[0.08] transition-colors"
-        >
-          <RefreshCw className={`w-4 h-4 ${feedRefreshing ? "animate-spin" : ""}`} />
-        </button>
+        <div className="hidden md:flex items-center gap-1">
+          <div className="mx-1.5 h-6 w-px bg-ink-hi/15" />
+          <button
+            onClick={() => goBack()}
+            title="Go back"
+            aria-label="Go back"
+            disabled={!canBack}
+            className={`app-no-drag w-9 h-9 grid place-items-center rounded-full transition-colors ${
+              canBack
+                ? "text-ink-hi/90 hover:text-ink-hi hover:bg-ink-hi/[0.08]"
+                : "text-ink-hi/30 pointer-events-none"
+            }`}
+          >
+            <ChevronLeft className="w-5 h-5" strokeWidth={2.5} />
+          </button>
+          <button
+            onClick={() => goForward()}
+            title="Go forward"
+            aria-label="Go forward"
+            disabled={!canForward}
+            className={`app-no-drag w-9 h-9 grid place-items-center rounded-full transition-colors ${
+              canForward
+                ? "text-ink-hi/90 hover:text-ink-hi hover:bg-ink-hi/[0.08]"
+                : "text-ink-hi/30 pointer-events-none"
+            }`}
+          >
+            <ChevronRight className="w-5 h-5" strokeWidth={2.5} />
+          </button>
+          <button
+            onClick={refreshCurrentView}
+            title="Refresh"
+            aria-label="Refresh"
+            className="app-no-drag w-9 h-9 grid place-items-center rounded-full text-ink-hi/60 hover:text-ink-hi hover:bg-ink-hi/[0.08] transition-colors"
+          >
+            <RefreshCw className={`w-4 h-4 ${feedRefreshing ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
       {/* Centre cluster — home button beside the search field, Spotify-style:
           pinned to the true window centre (not balanced between the side
-          clusters), centred on the bar's vertical midline. */}
-      <div className="absolute left-1/2 top-0 h-full -translate-x-1/2 flex items-center gap-3">
+          clusters), centred on the bar's vertical midline. Desktop only. */}
+      <div className="hidden md:flex absolute left-1/2 top-0 h-full -translate-x-1/2 items-center gap-3">
         <button
           onClick={goHome}
           title="Home"
@@ -683,15 +685,21 @@ export function TopBar() {
         </div>
       </div>
 
-      {/* Right cluster — user badge, then (Windows only) the renderer-drawn
-          caption buttons flush to the window edge. macOS uses the native
-          traffic lights, so nothing is drawn here. */}
-      <div className="ml-auto h-full flex items-center gap-1 shrink-0">
-        <div className="app-no-drag flex items-center gap-1">
+      {/* Right cluster — user badge, search button on mobile */}
+      <div className="ml-auto h-full flex items-center gap-1.5 shrink-0">
+        <button
+          onClick={() => navigate({ name: "search" })}
+          title="Search"
+          aria-label="Search"
+          className="md:hidden app-no-drag w-9 h-9 grid place-items-center rounded-full text-ink-hi/80 hover:text-ink-hi hover:bg-ink-hi/[0.08] active:scale-95 transition-all"
+        >
+          <Search className="w-5 h-5" />
+        </button>
+        <div className="hidden sm:flex app-no-drag items-center gap-1">
           <UpdateChip />
           <StreakChip />
         </div>
-        <div className="app-no-drag ml-1 mr-2 flex items-center">
+        <div className="app-no-drag ml-1 mr-1 md:mr-2 flex items-center">
           <Avatar onClick={toggleSettings} active={settingsShown} />
         </div>
         {!isMac && <div className="hidden lg:block"><CaptionButtons /></div>}
