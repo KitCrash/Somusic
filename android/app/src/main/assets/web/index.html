@@ -9,6 +9,26 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline' file:; style-src 'self' 'unsafe-inline' file:; img-src 'self' data: blob: https: localart:; media-src 'self' blob: https: http://127.0.0.1:* http://localhost:* file:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://localhost:* ws://127.0.0.1:*; font-src 'self' data: file:; object-src 'none'; base-uri 'self'"
     />
     <title>SoMusic</title>
+    <script>
+      (function() {
+        const origFetch = window.fetch;
+        window.fetch = function(url, options) {
+          try {
+            if (typeof url === 'string' && options && options.body && typeof options.body === 'string') {
+              const bodyObj = JSON.parse(options.body);
+              const u = new URL(url, window.location.href);
+              for (const [k, v] of Object.entries(bodyObj)) {
+                if (v !== undefined && v !== null && typeof v !== 'object') {
+                  u.searchParams.set(k, String(v));
+                }
+              }
+              url = u.toString();
+            }
+          } catch (e) {}
+          return origFetch.call(this, url, options);
+        };
+      })();
+    </script>
     <script type="module" crossorigin src="./assets/index-DfnKp0LX.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-ikva57a1.css">
   </head>
