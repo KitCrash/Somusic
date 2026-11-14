@@ -16,6 +16,7 @@ import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.webkit.WebViewAssetLoader
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -26,18 +27,28 @@ import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.net.URLEncoder
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import android.view.View
+import android.view.WindowManager
 
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
+    private val connectionPool = ConnectionPool(32, 5, TimeUnit.MINUTES)
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectionPool(connectionPool)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
-    // Infinite read timeout for continuous audio streaming
-    private val streamClient = client.newBuilder()
+    // Infinite read timeout for continuous audio streaming, sharing connection pool
+    private val streamClient = OkHttpClient.Builder()
+        .connectionPool(connectionPool)
+        .connectTimeout(6, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .followRedirects(true)
         .build()
@@ -46,6 +57,24 @@ class MainActivity : ComponentActivity() {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
+    }
+
+    private val streamUrlCache = ConcurrentHashMap<String, Pair<String, Long>>()
+    private val inFlightResolutions = ConcurrentHashMap<String, CompletableFuture<String>>()
+    private val prefetchExecutor = Executors.newFixedThreadPool(4)
+
+    fun prefetchTrack(trackId: String) {
+        if (trackId.isBlank()) return
+        val now = System.currentTimeMillis()
+        val cached = streamUrlCache[trackId]
+        if (cached != null && cached.second > now) return
+        prefetchExecutor.submit {
+            try {
+                resolveAudioStreamUrl(trackId)
+            } catch (e: Exception) {
+                Log.w("SoMusic", "Prefetch failed for $trackId: ${e.message}")
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -58,6 +87,10 @@ class MainActivity : ComponentActivity() {
         insetsController.isAppearanceLightStatusBars = false
         insetsController.isAppearanceLightNavigationBars = false
 
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        )
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
 
@@ -72,6 +105,10 @@ class MainActivity : ComponentActivity() {
 
         webView = WebView(this).apply {
             fitsSystemWindows = false
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -89,11 +126,23 @@ class MainActivity : ComponentActivity() {
                 loadWithOverviewMode = true
                 cacheMode = WebSettings.LOAD_DEFAULT
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                setRenderPriority(WebSettings.RenderPriority.HIGH)
+                setEnableSmoothTransition(true)
             }
 
-            webChromeClient = WebChromeClient()
+            WebView.setWebContentsDebuggingEnabled(true)
+
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                    Log.d("SoMusicWeb", "${consoleMessage?.messageLevel()}: ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})")
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }
 
             webViewClient = object : WebViewClient() {
+                override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                    Log.e("SoMusicWeb", "WebView Error $errorCode: $description for $failingUrl")
+                }
                 override fun shouldInterceptRequest(
                     view: WebView?,
                     request: WebResourceRequest?
@@ -184,9 +233,13 @@ class MainActivity : ComponentActivity() {
                 return handleRadioRequest(uri)
             }
 
-            // 9. Audio Stream Proxy with Range support
+            // 9. Audio Stream Proxy with Range support, metadata, and prefetch handling
             if (path == "/api/stream") {
                 val trackId = uri.getQueryParameter("id") ?: return null
+                if (uri.getQueryParameter("meta") != null || uri.getQueryParameter("prefetch") != null) {
+                    prefetchTrack(trackId)
+                    return createJsonResponse("""{"lufs":-14.0,"status":"prefetching"}""")
+                }
                 return handleStreamProxy(trackId, request.requestHeaders["Range"])
             }
 
@@ -403,6 +456,11 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 Log.w("SoMusic", "Fallback search error: ${e.message}")
             }
+        }
+
+        for (i in 0 until minOf(2, rows.length())) {
+            val sId = rows.getJSONObject(i).optJSONObject("song")?.optString("id")
+            if (!sId.isNullOrEmpty()) prefetchTrack(sId)
         }
 
         val result = JSONObject().apply {
@@ -697,6 +755,11 @@ class MainActivity : ComponentActivity() {
             put(buildTrackItem("1w7OgIMMRc4", "Sweet Child O' Mine", "Guns N' Roses", 356))
         }
 
+        for (i in 0 until minOf(4, hitsItems.length())) {
+            val tId = hitsItems.getJSONObject(i).optJSONObject("track")?.optString("id")
+            if (!tId.isNullOrEmpty()) prefetchTrack(tId)
+        }
+
         val allShelves = JSONArray().apply {
             put(buildShelf("Today's Biggest Hits", hitsItems))
             put(buildShelf("Chill & Lo-Fi Vibes", chillItems))
@@ -908,6 +971,10 @@ class MainActivity : ComponentActivity() {
                 extractVideos(json)
 
                 if (tracks.length() > 0) {
+                    for (i in 0 until minOf(2, tracks.length())) {
+                        val tId = tracks.getJSONObject(i).optString("id")
+                        if (tId.isNotEmpty()) prefetchTrack(tId)
+                    }
                     val out = JSONObject().apply {
                         put("tracks", tracks)
                         put("next", if (nextToken != null) nextToken else JSONObject.NULL)
@@ -932,6 +999,11 @@ class MainActivity : ComponentActivity() {
             put(buildRadioTrack("7wtfhZwyrcc", "Believer", "Imagine Dragons", 204))
             put(buildRadioTrack("JGwWNGJdvx8", "Shape of You", "Ed Sheeran", 233))
         }
+        for (i in 0 until minOf(2, fallbackTracks.length())) {
+            val tId = fallbackTracks.getJSONObject(i).optString("id")
+            if (tId.isNotEmpty()) prefetchTrack(tId)
+        }
+
         val fallback = JSONObject().apply {
             put("tracks", fallbackTracks)
             put("next", JSONObject.NULL)
@@ -1092,12 +1164,85 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun resolveAudioStreamUrl(trackId: String): String {
+        val now = System.currentTimeMillis()
+        val cached = streamUrlCache[trackId]
+        if (cached != null && cached.second > now) {
+            return cached.first
+        }
+
+        var createdFuture = false
+        val future = inFlightResolutions.computeIfAbsent(trackId) {
+            createdFuture = true
+            CompletableFuture<String>()
+        }
+
+        if (!createdFuture) {
+            try {
+                return future.get(6, TimeUnit.SECONDS)
+            } catch (e: Exception) {
+                Log.w("SoMusic", "Waiting for in-flight resolve timed out: ${e.message}")
+            }
+        }
+
+        var resolvedUrl: String? = null
+        try {
+            val infoReq = Request.Builder()
+                .url("https://yt.chocolatemoo53.com/api/v1/videos/$trackId")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .build()
+            val infoRes = client.newCall(infoReq).execute()
+            if (infoRes.isSuccessful) {
+                val bodyStr = infoRes.body?.string() ?: ""
+                val json = JSONObject(bodyStr)
+                val adaptive = json.optJSONArray("adaptiveFormats")
+                if (adaptive != null && adaptive.length() > 0) {
+                    var pickedUrl: String? = null
+                    for (i in 0 until adaptive.length()) {
+                        val fmt = adaptive.getJSONObject(i)
+                        val itag = fmt.optString("itag", "")
+                        if ((itag == "140" || itag == "251") && fmt.has("url")) {
+                            pickedUrl = fmt.getString("url")
+                            break
+                        }
+                    }
+                    if (pickedUrl == null) {
+                        for (i in 0 until adaptive.length()) {
+                            val fmt = adaptive.getJSONObject(i)
+                            val type = fmt.optString("type", "")
+                            if (type.contains("audio") && fmt.has("url")) {
+                                pickedUrl = fmt.getString("url")
+                                break
+                            }
+                        }
+                    }
+
+                    if (pickedUrl != null) {
+                        val uri = java.net.URI(pickedUrl)
+                        val proxyUrl = "https://yt.chocolatemoo53.com/videoplayback?" + uri.rawQuery
+                        streamUrlCache[trackId] = Pair(proxyUrl, now + 2 * 3600 * 1000L)
+                        resolvedUrl = proxyUrl
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SoMusic", "Stream resolve error for $trackId: ${e.message}")
+        } finally {
+            val result = resolvedUrl ?: "https://yt.chocolatemoo53.com/latest_version?id=$trackId&itag=140&local=true"
+            future.complete(result)
+            inFlightResolutions.remove(trackId)
+        }
+
+        return resolvedUrl ?: "https://yt.chocolatemoo53.com/latest_version?id=$trackId&itag=140&local=true"
+    }
+
     private fun handleStreamProxy(trackId: String, rangeHeader: String?): WebResourceResponse? {
-        val streamUrl = "https://yt.chocolatemoo53.com/latest_version?id=$trackId&itag=140&local=true"
+        val streamUrl = resolveAudioStreamUrl(trackId)
         try {
             val streamReqBuilder = Request.Builder()
                 .url(streamUrl)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .header("Referer", "https://yt.chocolatemoo53.com/")
             if (!rangeHeader.isNullOrEmpty()) {
                 streamReqBuilder.header("Range", rangeHeader)
             }
@@ -1109,6 +1254,7 @@ class MainActivity : ComponentActivity() {
                 responseHeaders["Access-Control-Allow-Headers"] = "Range, Content-Type, Authorization"
                 responseHeaders["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
                 responseHeaders["Accept-Ranges"] = "bytes"
+                responseHeaders["Cache-Control"] = "public, max-age=7200"
                 streamRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
                 streamRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
 
@@ -1125,6 +1271,33 @@ class MainActivity : ComponentActivity() {
                     responseHeaders,
                     streamRes.body?.byteStream()
                 )
+            } else if (streamRes.code == 403) {
+                streamUrlCache.remove(trackId)
+                val fallbackReq = Request.Builder()
+                    .url("https://yt.chocolatemoo53.com/latest_version?id=$trackId&itag=140&local=true")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                    .header("Referer", "https://yt.chocolatemoo53.com/")
+                if (!rangeHeader.isNullOrEmpty()) fallbackReq.header("Range", rangeHeader)
+                val fallbackRes = streamClient.newCall(fallbackReq.build()).execute()
+                if (fallbackRes.isSuccessful || fallbackRes.code == 206) {
+                    val responseHeaders = mutableMapOf<String, String>()
+                    responseHeaders["Access-Control-Allow-Origin"] = "*"
+                    responseHeaders["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+                    responseHeaders["Access-Control-Allow-Headers"] = "Range, Content-Type, Authorization"
+                    responseHeaders["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+                    responseHeaders["Accept-Ranges"] = "bytes"
+                    fallbackRes.header("Content-Range")?.let { responseHeaders["Content-Range"] = it }
+                    fallbackRes.header("Content-Length")?.let { responseHeaders["Content-Length"] = it }
+                    val rawMime = fallbackRes.header("Content-Type") ?: "audio/mp4"
+                    return WebResourceResponse(
+                        rawMime.substringBefore(";").trim(),
+                        null,
+                        fallbackRes.code,
+                        if (fallbackRes.code == 206) "Partial Content" else "OK",
+                        responseHeaders,
+                        fallbackRes.body?.byteStream()
+                    )
+                }
             }
         } catch (e: Exception) {
             Log.e("SoMusic", "Stream error for $trackId: ${e.message}", e)
@@ -1201,12 +1374,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cleanSongTitle(raw: String): String {
-        return raw
+        val cleaned = raw
             .replace(Regex("""\([^)]*\)"""), " ")
             .replace(Regex("""\[[^\]]*\]"""), " ")
             .replace(Regex("""["“”']"""), "")
             .replace(Regex("""\s+"""), " ")
             .trim()
+        return if (cleaned.isNotEmpty()) cleaned else raw.trim()
     }
 
     private fun primaryArtist(raw: String): String {
@@ -1231,9 +1405,13 @@ class MainActivity : ComponentActivity() {
                 if (match != null) {
                     val (min, sec, ms, text) = match.destructured
                     val time = min.toInt() * 60 + sec.toInt() + ms.toDouble() / (if (ms.length == 2) 100 else 1000)
+                    val lineText = text.trim()
                     val lineObj = JSONObject()
                     lineObj.put("time", time)
-                    lineObj.put("text", text.trim())
+                    lineObj.put("text", lineText)
+                    if (lineText.isEmpty()) {
+                        lineObj.put("gap", true)
+                    }
                     lines.put(lineObj)
                 }
             }

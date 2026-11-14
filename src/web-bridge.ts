@@ -42,12 +42,16 @@ export const webBridge: ByTuneApi = {
   getMoodPage: (browseId: string, params: string) =>
     fetch(`${API_BASE}/api/music/moodPage?browseId=${encodeURIComponent(browseId)}&params=${encodeURIComponent(params)}`).then((r) => r.json()),
   marketInfo: () => Promise.resolve({ country: "US", source: "ip" }),
-  getLyrics: (track: { id: string; title: string; artist: string; album?: string; duration?: number }) =>
-    fetch(`${API_BASE}/api/music/lyrics`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(track),
-    }).then((r) => r.json()),
+  getLyrics: (track: { id: string; title: string; artist: string; album?: string; duration?: number }) => {
+    const q = new URLSearchParams({
+      title: track.title || "",
+      artist: track.artist || "",
+      duration: String(track.duration || 0),
+    });
+    return fetch(`${API_BASE}/api/music/lyrics?${q.toString()}`)
+      .then((r) => r.json())
+      .catch(() => null);
+  },
   enrichDurations: (ids: string[]) =>
     fetch(`${API_BASE}/api/music/enrich`, {
       method: "POST",
@@ -60,6 +64,10 @@ export const webBridge: ByTuneApi = {
     Promise.resolve(
       `${API_BASE}/api/stream?id=${encodeURIComponent(id)}${forceRotate ? `&retry=${Date.now()}` : ""}${quality ? `&quality=${quality}` : ""}`
     ),
+  prefetchStream: (id: string) => {
+    if (!id) return;
+    void fetch(`${API_BASE}/api/stream?id=${encodeURIComponent(id)}&prefetch=1`).catch(() => {});
+  },
 
   // Local library
   localLibrary: () =>
@@ -95,14 +103,7 @@ export const webBridge: ByTuneApi = {
   introDone: () => {},
   naturalScrolling: () => Promise.resolve(null),
   setOverlayChrome: () => Promise.resolve(),
-  setFullScreen: (fs: boolean) => {
-    if (fs) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
-    } else if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
-    }
-    return Promise.resolve();
-  },
+  setFullScreen: () => Promise.resolve(),
   onMaximizeChange: () => () => {},
   onFullScreenChange: () => () => {},
 
@@ -195,28 +196,57 @@ export const webBridge: ByTuneApi = {
   getPodcasts: () => Promise.resolve([]),
   backupImport: () => Promise.resolve(),
 
-  // Auth (Guest mode by default)
-  authGetSession: () =>
-    Promise.resolve({
+  // Auth (Persistent Guest & Profile state)
+  authGetSession: () => {
+    let username = "Guest";
+    let displayName = "Music Lover";
+    try {
+      username = localStorage.getItem("somusic_username") || "Guest";
+      displayName = localStorage.getItem("somusic_display_name") || "Music Lover";
+    } catch {}
+    return Promise.resolve({
       mode: "guest",
       userId: "guest-user",
-      username: "Guest",
-      displayName: "Music Lover",
+      username,
+      displayName,
       freshInstall: false,
       needsUsername: false,
-    } as any),
+    } as any);
+  },
   authSignUp: () => Promise.resolve(),
   authSignIn: () => Promise.resolve(),
   authSignInGoogle: () => Promise.resolve(),
   authContinueGuest: () => Promise.resolve(),
-  authClearGuestProfile: () => Promise.resolve(),
+  authClearGuestProfile: () => {
+    try {
+      localStorage.removeItem("somusic_username");
+      localStorage.removeItem("somusic_display_name");
+    } catch {}
+    return Promise.resolve();
+  },
   authUsernameAvailable: () => Promise.resolve(true),
-  authSetUsername: () => Promise.resolve(),
+  authSetUsername: (u: string) => {
+    try {
+      localStorage.setItem("somusic_username", u);
+    } catch {}
+    return Promise.resolve();
+  },
   authSkipUsername: () => Promise.resolve(),
-  authSetDisplayName: () => Promise.resolve(),
-  authSignOut: () => Promise.resolve(),
+  authSetDisplayName: (d: string) => {
+    try {
+      localStorage.setItem("somusic_display_name", d);
+    } catch {}
+    return Promise.resolve();
+  },
+  authSignOut: () => {
+    try {
+      localStorage.removeItem("somusic_username");
+      localStorage.removeItem("somusic_display_name");
+    } catch {}
+    return Promise.resolve();
+  },
   onAuthChanged: () => () => {},
-  syncStatus: () => Promise.resolve({ syncing: false } as any),
+  syncStatus: () => Promise.resolve({ syncing: false, lastSyncAt: Date.now(), state: "idle", lastError: null } as any),
   syncNow: () => Promise.resolve(),
   syncBackupNow: () => Promise.resolve(),
   syncRestoreNow: () => Promise.resolve(),

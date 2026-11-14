@@ -491,7 +491,7 @@ export default function App() {
                   sticky pills (z-10 inside the scroller) paint above it, so
                   they stay sharp while the rows behind them blur. */}
               {viewName === "search" && (
-                <div aria-hidden className="search-band pointer-events-none absolute inset-x-0 top-0 h-16" />
+                <div aria-hidden className="search-band hidden md:block pointer-events-none absolute inset-x-0 top-0 h-16" />
               )}
             </>
           )}

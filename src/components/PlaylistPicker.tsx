@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, Plus } from "lucide-react";
 import { useLibrary } from "../stores/library";
 import { useUI } from "../stores/ui";
 import { Btn } from "./primitives";
@@ -55,6 +55,12 @@ export function PlaylistPicker() {
     if (!told) useUI.getState().toast(`Added to ${picked.size} ${picked.size === 1 ? "playlist" : "playlists"}`, "success");
     close();
   };
+  const createAndAdd = () => {
+    const pl = useLibrary.getState().createPlaylist(`My Playlist ${playlists.length + 1}`);
+    addSongsToPlaylists([pl.id], tracks);
+    useUI.getState().toast(`Created "${pl.name}" and added song`, "success");
+    close();
+  };
   const what = tracks.length === 1 ? `"${shortTitle(tracks[0].title)}"` : `${tracks.length} songs`;
 
   return (
@@ -72,7 +78,16 @@ export function PlaylistPicker() {
         tabIndex={-1}
         className="relative w-[min(420px,calc(100vw-48px))] rounded-2xl glass-strong p-6 animate-pop-in"
       >
-        <h2 className="font-display text-lg font-bold tracking-tight text-ink-hi">Add to playlists</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-lg font-bold tracking-tight text-ink-hi">Add to playlists</h2>
+          <button
+            onClick={createAndAdd}
+            className="flex items-center gap-1 text-[13px] font-semibold text-accent hover:underline py-1 px-2 rounded-lg bg-accent/10 hover:bg-accent/20 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New playlist</span>
+          </button>
+        </div>
         <p className="text-[13px] text-ink-dim mt-1.5 [overflow-wrap:anywhere]">Choose where {what} should go.</p>
         <div className="mt-4 max-h-[50vh] overflow-y-auto -mx-2 space-y-0.5">
           {playlists.length === 0 && <p className="px-2 py-4 text-[13px] text-ink-dim">You don't have any playlists yet.</p>}

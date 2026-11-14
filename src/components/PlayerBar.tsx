@@ -214,6 +214,9 @@ export function PlayerBar() {
 
   const liked = useLibrary((s) => (track ? s.liked.some((t) => t.id === track.id) : false));
   const hideVolumeBar = useSettings((s) => s.hideVolumeBar);
+  const position = usePlayer((s) => s.position);
+  const duration = usePlayer((s) => s.duration) || track?.duration || 1;
+  const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0;
   const coverDrag = useDrag({ track: track ?? { id: "", title: "", artist: "", duration: 0, thumb: "" } });
 
   /** The "+" beside the track — two top-level options: liked, and the
@@ -222,6 +225,10 @@ export function PlayerBar() {
   const addToPlaylistRef = useRef<HTMLButtonElement | null>(null);
   const openAddToPlaylist = (): void => {
     if (!track) return;
+    if (window.innerWidth < 768) {
+      useUI.getState().openPlaylistPicker([track]);
+      return;
+    }
     // Real toggle: when the picker is already open, this click closes it.
     // (The pointerdown handler on the button below keeps the open menu alive
     // until the click arrives — otherwise the menu's outside-press dismissal
@@ -317,9 +324,102 @@ export function PlayerBar() {
   const VolIcon = muted || volume === 0 ? SpVolumeOff : SpVolumeHigh;
 
   return (
-    <footer className="shrink-0 z-30 bg-black px-2">
+    <footer className="shrink-0 z-30 bg-transparent px-2 md:px-2 md:bg-black">
+      {/* Mobile Elevated Player Card */}
+      <div className="md:hidden relative rounded-xl bg-[#212121]/95 backdrop-blur-xl border border-white/[0.08] shadow-2xl mb-1.5 overflow-hidden">
+        {/* Top Progress Line */}
+        <div className="absolute top-0 inset-x-0 h-[2.5px] bg-white/10 overflow-hidden z-10 pointer-events-none">
+          <div
+            className="h-full bg-accent transition-[width] duration-150 ease-linear"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <div className="h-[60px] flex items-center justify-between px-2.5">
+          {/* Left: Thumbnail & Song Info */}
+          <div className="flex items-center min-w-0 flex-1 mr-2">
+            <button
+              onClick={toggleNowPlaying}
+              title="Now playing view"
+              className="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[#282828] focus:outline-none"
+            >
+              {track?.thumb ? (
+                <img
+                  key={track.id}
+                  src={upgradeArtwork(track.thumb)}
+                  alt=""
+                  className="h-full w-full object-cover animate-art-in"
+                />
+              ) : (
+                <div className="grid h-full w-full place-items-center">
+                  <SpCoverNote />
+                </div>
+              )}
+            </button>
+            <div className="ml-2.5 min-w-0 flex-1">
+              <button onClick={toggleNowPlaying} className="block w-full text-left animate-meta-in" key={track ? `meta-${track.id}` : "meta-none"}>
+                <span className="block min-w-0 text-[14px] font-semibold leading-tight text-white truncate">
+                  <FitText mode="auto" text={track ? shortTitle(track.title) : "Nothing playing"} full={track?.title} />
+                </span>
+                <span className="block min-w-0 text-[12px] leading-tight text-[#b3b3b3] truncate mt-0.5">
+                  <FitText mode="auto" text={track ? track.artist : "Search for something to play"} />
+                </span>
+              </button>
+            </div>
+            {track && (
+              <button
+                ref={addToPlaylistRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openAddToPlaylist();
+                }}
+                title="Add to playlist"
+                aria-label="Add to playlist"
+                className="ml-2 p-1.5 flex shrink-0 items-center justify-center text-[#b3b3b3] hover:text-white active:scale-95 transition-all"
+              >
+                {liked ? <SpCheck /> : <SpPlus />}
+              </button>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleLyrics();
+              }}
+              title="Lyrics"
+              aria-label="Lyrics"
+              className={`p-1.5 flex shrink-0 items-center justify-center transition-all ${
+                lyricsCenter ? "text-accent" : "text-[#b3b3b3] hover:text-white"
+              }`}
+            >
+              <SpLyrics />
+            </button>
+          </div>
+
+          {/* Right: Transport Controls */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={toggle}
+              title={playing ? "Pause" : "Play"}
+              aria-label={playing ? "Pause" : "Play"}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-black active:scale-95 shadow-md transition-transform"
+            >
+              {buffering ? <Loader2 className="w-4 h-4 animate-spin" /> : playing ? <SpPause /> : <SpPlay />}
+            </button>
+            <button
+              onClick={() => next(true)}
+              title="Next"
+              aria-label="Next"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/80 hover:text-white active:scale-95 transition-colors"
+            >
+              <SpNext />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Desktop Player Bar */}
       <div
-        className="h-[64px] md:h-[88px] flex md:grid md:grid-cols-[3fr_4fr_3fr] items-center justify-between"
+        className="hidden md:grid md:grid-cols-[3fr_4fr_3fr] h-[88px] items-center justify-between"
         role="contentinfo"
         aria-label="Now playing bar"
       >
@@ -361,14 +461,9 @@ export function PlayerBar() {
             <button
               ref={addToPlaylistRef}
               onPointerDown={(e) => {
-                // Keep the context menu's outside-press dismissal from
-                // closing an open picker on this press — the click handler
-                // then sees the open menu and toggles it closed instead.
                 e.stopPropagation();
               }}
               onClick={(e) => {
-                // The opening click must not bubble to the ContextMenu's
-                // click-outside listener, or it closes itself immediately.
                 e.stopPropagation();
                 openAddToPlaylist();
               }}
@@ -377,19 +472,15 @@ export function PlayerBar() {
               aria-haspopup="menu"
               className="ml-4 flex h-8 w-4 shrink-0 items-center justify-center text-[#b3b3b3] transition-all hover:scale-105 hover:text-white active:scale-95"
             >
-              {/* Spotify's model: the glyph reflects Liked state, the click
-                  always opens the add-to-playlist picker. */}
               {liked ? <SpCheck /> : <SpPlus />}
             </button>
           )}
         </div>
 
         {/* Mobile controls */}
-        <div className="flex md:hidden items-center gap-2 pr-2">
+        <div className="hidden">
           <button
             onClick={toggle}
-            title={playing ? "Pause" : "Play"}
-            aria-label={playing ? "Pause" : "Play"}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-black active:scale-95 shadow-md"
           >
             {buffering ? <Loader2 className="w-4 h-4 animate-spin" /> : playing ? <SpPause /> : <SpPlay />}

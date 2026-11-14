@@ -58,7 +58,7 @@ export function CoverGlow() {
     return () => window.clearTimeout(timer);
   }, [layers, url]);
 
-  if (viewName === "artist" || viewName === "settings") return null;
+  if (viewName === "artist" || viewName === "settings" || viewName === "search") return null;
   return (
     <div aria-hidden className="cover-glow pointer-events-none absolute inset-x-0 top-0 h-[360px]">
       {layers.map((layer) => (

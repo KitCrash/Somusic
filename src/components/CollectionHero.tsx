@@ -47,7 +47,7 @@ export function CollectionHero({
 }) {
   const tiles = wallCovers(covers, ROWS * PER_ROW);
   return (
-    <header className="collection-hero -mx-10 -mt-5">
+    <header className="collection-hero -mx-3 md:-mx-10 -mt-3 md:-mt-5 overflow-hidden">
       <div aria-hidden className="cover-wall">
         <div className="cover-wall-rows">
           {Array.from({ length: ROWS }, (_, r) => {
@@ -74,7 +74,7 @@ export function CollectionHero({
       <div aria-hidden className="cover-wall-shade" />
       {light && <div aria-hidden className="collection-light" style={{ "--collection-light": light } as CSSProperties} />}
       <div aria-hidden className="cover-glow-grain" />
-      <div className="collection-hero-text relative px-10 pt-[184px] pb-8">
+      <div className="collection-hero-text relative px-4 md:px-10 pt-16 md:pt-[184px] pb-5 md:pb-8">
         <div className="flex items-center gap-2 text-[13px] font-semibold text-white/80">
           {mark ??
             (Icon && (
@@ -85,12 +85,12 @@ export function CollectionHero({
           {kind}
         </div>
         <h1
-          className={`mt-2 font-display ${TITLE_SIZE[titleStep(title)]} font-extrabold leading-[0.98] tracking-[-0.045em] text-white break-words max-w-[18ch]`}
+          className={`mt-2 font-display text-[30px] md:text-[clamp(36px,3.8vw,56px)] font-extrabold leading-[1.05] tracking-[-0.035em] text-white break-words max-w-[18ch]`}
         >
           {title}
         </h1>
-        <div className="mt-3 text-[14.5px] text-white/75">{facts}</div>
-        <div className="mt-6 flex items-center gap-2.5">{children}</div>
+        <div className="mt-2 text-[13px] md:text-[14.5px] text-white/75">{facts}</div>
+        <div className="mt-4 md:mt-6 flex items-center gap-2.5">{children}</div>
       </div>
     </header>
   );

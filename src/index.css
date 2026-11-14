@@ -54,6 +54,9 @@ html,
 body,
 #root {
   height: 100%;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  overscroll-behavior: none;
 }
 
 /* ---------- frameless window chrome ---------- */
@@ -442,6 +445,9 @@ main {
 /* The scroll timeline the search band reads (see .search-band). */
 #view-scroll {
   scroll-timeline-name: --view-scroll;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
 }
 
 /* The middle panel's glow (components/CoverGlow): the cover blurred into light
@@ -768,13 +774,23 @@ body.bytune-dragging * {
 /* A collection as a stack of its covers: hovering fans the sleeves out and lights them from below. */
 .stack-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 30px 26px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 12px;
+}
+@media (min-width: 640px) {
+  .stack-grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 30px 26px;
+  }
 }
 .stack-card {
   position: relative;
   min-width: 0;
   animation: rise-in 520ms var(--ease-enter) both;
+  transition: transform 140ms ease;
+}
+.stack-card:active {
+  transform: scale(0.96);
 }
 .stack-art {
   position: relative;

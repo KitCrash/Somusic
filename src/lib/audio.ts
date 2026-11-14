@@ -272,21 +272,17 @@ function setLoudness(trackId: string, lufs: number): void {
 async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
   const trackId = track.id;
   try {
-    const res = await fetch(`${proxyUrl}&meta=1`, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return;
-    const data = (await res.json()) as { lufs?: unknown };
-    const lufs = typeof data?.lufs === "number" && Number.isFinite(data.lufs) ? data.lufs : null;
-    if (lufs === null) {
-      // A Piped stream: YouTube reported nothing, so measure it.
-      needsMeasuring.add(trackId);
-      analyse(track);
+    const res = await fetch(`${proxyUrl}&meta=1`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) {
+      setLoudness(trackId, -14);
       return;
     }
+    const data = (await res.json()) as { lufs?: unknown };
+    const lufs = typeof data?.lufs === "number" && Number.isFinite(data.lufs) ? data.lufs : -14;
     needsMeasuring.delete(trackId);
-    // The track already playing (or being faded into) picks the gain up now.
     setLoudness(trackId, lufs);
   } catch {
-    /* metadata is best-effort */
+    setLoudness(trackId, -14);
   }
 }
 
@@ -1537,6 +1533,12 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       usePlayer.setState({ buffering: false });
     }
     if (trim && trim.tail > 0.05 && usePlayer.getState().playing) armSilenceTail(trim.tail);
+    const nxt = upNext(usePlayer.getState());
+    if (nxt && !nxt.localPath && !nxt.id.startsWith("local:")) {
+      void requireBridge().getStreamUrl(nxt.id, false, useSettings.getState().streamingQuality).then((u) => {
+        if (u) void fetch(`${u}&prefetch=1`).catch(() => {});
+      });
+    }
   } catch (err) {
     const cur = usePlayer.getState().queue[usePlayer.getState().index];
     if (cur?.id !== track.id || seq !== loadSeq) return;
