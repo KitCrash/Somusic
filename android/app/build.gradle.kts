@@ -10,15 +10,32 @@ android {
   defaultConfig {
     applicationId = "com.kitcrash.somusic"
     minSdk = 24
-    targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    targetSdk = 34
+    versionCode = 2
+    versionName = "1.0.1"
+  }
+
+  signingConfigs {
+    create("release") {
+      storeFile = file("somusic-release.jks")
+      storePassword = "somusicpassword"
+      keyAlias = "somusickey"
+      keyPassword = "somusicpassword"
+      enableV1Signing = true
+      enableV2Signing = true
+      enableV3Signing = true
+      enableV4Signing = true
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
+      signingConfig = signingConfigs.getByName("release")
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
+    debug {
+      signingConfig = signingConfigs.getByName("release")
     }
   }
   compileOptions {
