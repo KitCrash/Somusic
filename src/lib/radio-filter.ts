@@ -23,8 +23,8 @@ export interface PickOptions {
   limit: number;
 }
 
-const PER_ARTIST = 2;
-const SEED_ARTIST = 3;
+const PER_ARTIST = 3;
+const SEED_ARTIST = 5;
 const MIN_SEC = 60;
 const MAX_SEC = 15 * 60;
 /** Queue videos only when fewer catalogue songs than this survive. */

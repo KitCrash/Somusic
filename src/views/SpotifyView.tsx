@@ -1,7 +1,7 @@
 /**
- * The connected Spotify account as ByTune shows it: a wall of its playlists' covers under Spotify's own
+ * The connected Spotify account as SoMusic shows it: a wall of its playlists' covers under Spotify's own
  * mark and a light of its green; then the playlists as stacks of their covers (Liked Songs first, on a
- * sleeve of ByTune's own), each opening that playlist matched to YouTube Music (MatchedPlaylistView).
+ * sleeve of SoMusic's own), each opening that playlist matched to YouTube Music (MatchedPlaylistView).
  * Not connected, or needing to sign in again, the page says so and offers to.
  */
 import { useEffect, useState } from "react";
@@ -12,12 +12,13 @@ import { HERO_PILL, HERO_ROUND } from "../components/PlaylistHero";
 import { SPOTIFY_GREEN, SpotifyIcon } from "../components/SpotifyIcon";
 import { plural } from "../lib/format";
 import { askToDisconnectSpotify, connectSpotify, spotifyUrl, useSpotify } from "../lib/spotify";
+import { importFromText } from "../lib/importSongs";
 import { useUI } from "../stores/ui";
 import type { SpotifyPlaylistInfo } from "../types";
 
 const LIKED = "liked";
 
-/** Liked Songs has no artwork on Spotify: its sleeve is ByTune's own, a white heart in Spotify's green light. */
+/** Liked Songs has no artwork on Spotify: its sleeve is SoMusic's own, a white heart in Spotify's green light. */
 const LIKED_SLEEVE = `data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240"><defs><radialGradient id="l" cx="50%" cy="115%" r="100%">` +
     `<stop offset="0" stop-color="${SPOTIFY_GREEN}" stop-opacity="0.95"/><stop offset="0.45" stop-color="${SPOTIFY_GREEN}" stop-opacity="0.3"/>` +
@@ -74,7 +75,7 @@ export function SpotifyView() {
   const mark = <SpotifyIcon className="w-6 h-6 shrink-0" />;
   const note = (
     <p className="pt-10 text-[12px] text-ink-faint leading-relaxed max-w-2xl">
-      Songs play from YouTube Music, matched by title, artist and length. ByTune reads your playlists the way Spotify's web player does,
+      Songs play from YouTube Music, matched by title, artist and length. SoMusic reads your playlists the way Spotify's web player does,
       which isn't an official Spotify feature, so it may stop working.
     </p>
   );
@@ -94,8 +95,29 @@ export function SpotifyView() {
             </span>
           }
         >
-          <button type="button" className={HERO_PLAY} onClick={() => void connectSpotify()} disabled={connecting}>
-            {connecting ? "Finish signing in in the Spotify window" : status.connected ? "Reconnect" : "Connect Spotify"}
+          <button
+            type="button"
+            className={HERO_PLAY}
+            onClick={() => {
+              useUI.getState().openDialog({
+                title: "Import Spotify Playlist",
+                body: "Paste any public Spotify playlist URL or ID (e.g. https://open.spotify.com/playlist/...). SoMusic matches all tracks to high quality streams.",
+                initialValue: "",
+                placeholder: "https://open.spotify.com/playlist/...",
+                confirmLabel: "Import & Match",
+                onConfirm: (val) => void importFromText(val),
+              });
+            }}
+          >
+            Import Playlist URL
+          </button>
+          <button
+            type="button"
+            className="px-5 py-2.5 rounded-full text-[14px] font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors"
+            onClick={() => void connectSpotify()}
+            disabled={connecting}
+          >
+            {connecting ? "Connecting..." : status.connected ? "Reconnect" : "Connect Account"}
           </button>
         </CollectionHero>
         {note}

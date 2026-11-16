@@ -1,21 +1,9 @@
 # SoMusic 🎵
 
-> **Free, open-source Spotify & YouTube Music alternative for Android, Web, and Desktop: the entire YouTube Music catalog and your own local files in one modern app, with no ads, no subscription, and word-synced lyrics.**
+> **Free, open-source Spotify & YouTube Music web alternative: the entire YouTube Music catalog and your own local files in one modern app, with no ads, no subscription, and word-synced lyrics.**
 
-[![Release APK](https://img.shields.io/badge/Download-Android%20APK%20(v1.0)-success?style=for-the-badge&logo=android)](release/somusic.apk)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg?style=for-the-badge)](LICENSE)
-[![Platform: Android · Web · Windows · macOS](https://img.shields.io/badge/Platform-Android%20%7C%20Web%20%7C%20Desktop-purple?style=for-the-badge)](#)
-
----
-
-## 📱 Android APK Installation
-
-You can download the ready-to-install Android APK directly from this repository:
-👉 **[Download SoMusic Android APK (16.6 MB)](release/somusic.apk)**
-
-1. Download `release/somusic.apk` to your Android device (Android 8.0+ supported).
-2. Tap the downloaded file to install (allow "Install from Unknown Sources" if prompted).
-3. Open **SoMusic** and enjoy ad-free music streaming!
+[![Platform: Web](https://img.shields.io/badge/Platform-Web-purple?style=for-the-badge)](#)
 
 ---
 
@@ -23,9 +11,9 @@ You can download the ready-to-install Android APK directly from this repository:
 
 - **No Ads, No Subscription, No Login Required**: Stream the full YouTube Music catalog completely free.
 - **Word-Synced & Line-Synced Lyrics**: Real-time synchronized lyrics highlighting word-by-word with auto-scroll and click-to-seek (powered by LRCLIB and YouTube Transcripts).
-- **Mobile-Optimized Touch UI**:
-  - Bottom navigation bar (Home, Explore, Search, Library)
-  - Quick player bar with thumb controls
+- **Responsive Touch & Desktop UI**:
+  - Top navigation bar & responsive mobile navigation (Home, Explore, Search, Library)
+  - Quick player bar with controls
   - Fullscreen Now Playing screen with album art, live lyrics, and audio visualizer
 - **Studio Audio Engine**:
   - 10-band Graphic Equalizer (31 Hz – 16 kHz)
@@ -41,12 +29,6 @@ You can download the ready-to-install Android APK directly from this repository:
 
 ```
 somusic/
-├── android/                 # Native Android Studio / Gradle Project
-│   ├── app/
-│   │   ├── src/main/assets/ # Bundled production web build
-│   │   └── src/main/kotlin/ # Native Android OkHttp & WebView Bridge
-│   ├── build.gradle.kts
-│   └── gradlew.bat
 ├── server/                  # Standalone Node.js Audio Streaming & Search API
 │   ├── index.mjs            # HTTP server with Range (206) proxy
 │   ├── music-service.mjs    # InnerTube YouTube Music integration
@@ -55,41 +37,44 @@ somusic/
 │   ├── components/          # TopBar, MobileBottomNav, PlayerBar, SyncedLyrics, etc.
 │   ├── stores/              # Zustand stores (player, library, settings, ui)
 │   ├── views/               # Home, Search, Explore, Album, Artist, Replay, Settings
-│   └── web-bridge.ts        # Dynamic IPC & Web API bridge
-├── release/                 # Pre-built APK releases
-│   └── somusic.apk          # Production-ready Android package
+│   └── web-bridge.ts        # Dynamic Web API bridge
 └── package.json             # NPM dependencies & build scripts
 ```
 
 ---
 
-## 🚀 Running the Web Player Locally
+## 🚀 Running Locally & Deploying to Web
 
 ### Prerequisites
 - Node.js 18+ and npm
 
-### 1. Install Dependencies
+### 1. Run Locally
 ```bash
 npm install
-```
-
-### 2. Start Both the Backend API and Web Player
-```bash
 npm run dev
 ```
-
-Open your browser to:
-**`http://localhost:5173`**
+Open **`http://localhost:5173`** in your browser.
 
 ---
 
-## 🛠️ Building the Android APK from Source
+## 🌐 Deploying to the Web via GitHub
 
-```bash
-cd android
-./gradlew assembleDebug
-```
-The compiled APK will be at `android/app/build/outputs/apk/debug/app-debug.apk`.
+### Option 1: 1-Click Full-Stack Cloud Deployment (Recommended)
+Because YouTube Music audio streaming and synchronized lyrics proxies require a lightweight Node.js runtime, you can deploy the full app for free on **Render**, **Railway**, or **Koyeb** directly linked to your GitHub repository:
+
+1. Push this repository to GitHub (`KitCrash/Somusic`).
+2. Log into [Render.com](https://render.com) (or [Railway.app](https://railway.app)).
+3. Click **New +** → **Web Service** → Select your GitHub repository **`KitCrash/Somusic`**.
+4. Configure settings (or let Render read `render.yaml` automatically):
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+5. Click **Deploy**! Your web player will be live with full streaming audio and lyrics at `https://your-app.onrender.com`.
+
+### Option 2: GitHub Pages (Automatic via GitHub Actions)
+This repository includes a GitHub Actions workflow (`.github/workflows/deploy.yml`):
+1. In your GitHub repository, go to **Settings** → **Pages**.
+2. Under **Build and deployment** → **Source**, select **GitHub Actions**.
+3. Every push to `main` will automatically build and publish the web player to `https://<your-username>.github.io/Somusic/`.
 
 ---
 

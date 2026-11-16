@@ -22,9 +22,9 @@ import { requireBridge } from "./bridge";
 import { artistKey, pickSuggestions, recordingKey, type RadioCandidate } from "./radio-filter";
 
 /** Refill when fewer suggestions than this are queued… */
-const LOW_WATER = 5;
+const LOW_WATER = 10;
 /** …up to this many. */
-const MAX_TAIL = 25;
+const MAX_TAIL = 35;
 /** Radio pages to try per refill when filtering leaves nothing new. */
 const MAX_PAGES = 3;
 /** After a refill came back empty, wait before asking again (unless the queue ran out). */
@@ -75,7 +75,7 @@ function wantsMore(): boolean {
   if (!p.playing || Date.now() - failedAt < RETRY_AFTER_MS) return false;
   const tail = autoplayTail(p);
   const ownLeft = p.queue.length - tail - p.index - 1;
-  return ownLeft <= 1 && tail < LOW_WATER;
+  return tail < LOW_WATER || ownLeft <= 2;
 }
 
 function radio(id: string, next?: string | null): Promise<RadioPage | null> {

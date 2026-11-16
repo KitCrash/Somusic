@@ -3,8 +3,9 @@
   "productName": "SoMusic",
   "version": "1.0.0",
   "author": "KitCrash",
-  "description": "Free, open-source Spotify & YouTube Music alternative for Web, Desktop and Android with word-synced lyrics, 10-band EQ, and zero ads.",
+  "description": "Free, open-source Spotify & YouTube Music alternative for Web with word-synced lyrics, 10-band EQ, and zero ads.",
   "scripts": {
+    "start": "node server/index.mjs",
     "dev": "concurrently \"node server/index.mjs\" \"vite\"",
     "build": "vite build",
     "server": "node server/index.mjs",

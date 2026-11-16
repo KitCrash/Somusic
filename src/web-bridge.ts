@@ -1,15 +1,73 @@
 /**
- * Web Bridge polyfill for ByTune Web Player
- * Connects window.bytune to the local Node backend API
+ * Web Bridge polyfill for SoMusic Web Player
+ * Connects window.bytune to the local Node backend API and browser Web APIs.
  */
 import type { ByTuneApi } from "../electron/preload";
 
-const API_BASE = window.location.origin;
+function getApiBase(): string {
+  if (typeof window === "undefined") return "http://127.0.0.1:3001";
+  const custom = window.localStorage?.getItem("somusic_api_url") || (window as any).__SOMUSIC_API_URL__;
+  if (custom && typeof custom === "string" && custom.trim()) {
+    return custom.trim().replace(/\/+$/, "");
+  }
+  return window.location.origin;
+}
+
+const API_BASE = getApiBase();
+
+// PiP / Miniplayer window tracking & broadcast sync
+let pipWindowRef: Window | null = null;
+const pipChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("somusic_pip") : null;
+const pipOpenSubscribers = new Set<(open: boolean) => void>();
+const pipCommandSubscribers = new Set<(cmd: any) => void>();
+const pipStateSubscribers = new Set<(state: any) => void>();
+
+if (pipChannel) {
+  pipChannel.onmessage = (e) => {
+    const { type, payload } = e.data || {};
+    if (type === "pip:command") {
+      pipCommandSubscribers.forEach((cb) => cb(payload));
+    } else if (type === "pip:state") {
+      pipStateSubscribers.forEach((cb) => cb(payload));
+    } else if (type === "pip:open-change") {
+      pipOpenSubscribers.forEach((cb) => cb(payload));
+    }
+  };
+}
+
+// Download event subscribers
+const downloadEventSubscribers = new Set<(e: any) => void>();
+const downloadProgressSubscribers = new Set<(p: any) => void>();
+
+function emitDownloadEvent(evt: any) {
+  downloadEventSubscribers.forEach((cb) => cb(evt));
+}
+
+function emitDownloadProgress(prog: any) {
+  downloadProgressSubscribers.forEach((cb) => cb(prog));
+}
+
+// In-memory web local library
+let webLocalLibrary: {
+  folders: Array<{ path: string; name: string; trackCount: number }>;
+  scannedAt: number;
+  tracks: any[];
+} = {
+  folders: [],
+  scannedAt: Date.now(),
+  tracks: [],
+};
+
+// Try to hydrate web local library from localStorage
+try {
+  const saved = localStorage.getItem("somusic_local_library");
+  if (saved) webLocalLibrary = JSON.parse(saved);
+} catch {}
 
 export const webBridge: ByTuneApi = {
   platform: "win32",
   versions: {
-    app: "1.1.1 (Web Player)",
+    app: "1.1.1 (Web)",
     electron: "Web Browser",
     chrome: navigator.userAgent,
     node: "22",
@@ -42,83 +100,169 @@ export const webBridge: ByTuneApi = {
   getMoodPage: (browseId: string, params: string) =>
     fetch(`${API_BASE}/api/music/moodPage?browseId=${encodeURIComponent(browseId)}&params=${encodeURIComponent(params)}`).then((r) => r.json()),
   marketInfo: () => Promise.resolve({ country: "US", source: "ip" }),
+
+  // Lyrics API (POST + GET support, multi-tier fallback with word timings)
   getLyrics: (track: { id: string; title: string; artist: string; album?: string; duration?: number }) => {
-    const q = new URLSearchParams({
-      title: track.title || "",
-      artist: track.artist || "",
-      duration: String(track.duration || 0),
-    });
-    return fetch(`${API_BASE}/api/music/lyrics?${q.toString()}`)
+    return fetch(`${API_BASE}/api/music/lyrics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(track),
+    })
       .then((r) => r.json())
-      .catch(() => null);
+      .catch(() => {
+        const q = new URLSearchParams({
+          id: track.id || "",
+          title: track.title || "",
+          artist: track.artist || "",
+          duration: String(track.duration || 0),
+        });
+        return fetch(`${API_BASE}/api/music/lyrics?${q.toString()}`)
+          .then((r) => r.json())
+          .catch(() => null);
+      });
   },
+
   enrichDurations: (ids: string[]) =>
     fetch(`${API_BASE}/api/music/enrich`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     }).then((r) => r.json()),
+
   playbackEvent: () => {},
   statsSummary: () => Promise.resolve(null as any),
+
   getStreamUrl: (id: string, forceRotate = false, quality?: string) =>
     Promise.resolve(
       `${API_BASE}/api/stream?id=${encodeURIComponent(id)}${forceRotate ? `&retry=${Date.now()}` : ""}${quality ? `&quality=${quality}` : ""}`
     ),
+
   prefetchStream: (id: string) => {
     if (!id) return;
     void fetch(`${API_BASE}/api/stream?id=${encodeURIComponent(id)}&prefetch=1`).catch(() => {});
   },
 
   // Local library
-  localLibrary: () =>
-    fetch(`${API_BASE}/api/library/get`)
-      .then((r) => r.json())
-      .catch(() => ({ folders: [], scannedAt: 0, tracks: [] })),
-  scanLibrary: () =>
-    fetch(`${API_BASE}/api/library/scan`)
-      .then((r) => r.json())
-      .catch(() => ({ folders: [], scannedAt: 0, tracks: [] })),
-  setLibraryFolders: () => Promise.resolve({ folders: [], scannedAt: 0, tracks: [] } as any),
-  addLibraryFolders: () => Promise.resolve({ lib: { folders: [], scannedAt: 0, tracks: [] }, added: [], skipped: [] } as any),
+  localLibrary: () => Promise.resolve(webLocalLibrary as any),
+  scanLibrary: () => Promise.resolve(webLocalLibrary as any),
+  setLibraryFolders: (folders: string[]) => {
+    webLocalLibrary.folders = folders.map((f) => ({ path: f, name: f.split(/[\\/]/).pop() || f, trackCount: 0 }));
+    try { localStorage.setItem("somusic_local_library", JSON.stringify(webLocalLibrary)); } catch {}
+    return Promise.resolve(webLocalLibrary as any);
+  },
+  addLibraryFolders: (folders: string[]) => {
+    const added: any[] = [];
+    for (const f of folders) {
+      if (!webLocalLibrary.folders.some((e) => e.path === f)) {
+        const entry = { path: f, name: f.split(/[\\/]/).pop() || f, trackCount: 0 };
+        webLocalLibrary.folders.push(entry);
+        added.push(entry);
+      }
+    }
+    try { localStorage.setItem("somusic_local_library", JSON.stringify(webLocalLibrary)); } catch {}
+    return Promise.resolve({ lib: webLocalLibrary, added, skipped: [] } as any);
+  },
   renameLibraryFolder: () => Promise.resolve(),
-  removeLibraryFolder: () => Promise.resolve(),
-  libraryFolderStatuses: () => Promise.resolve([]),
+  removeLibraryFolder: (folderPath: string) => {
+    webLocalLibrary.folders = webLocalLibrary.folders.filter((f) => f.path !== folderPath);
+    try { localStorage.setItem("somusic_local_library", JSON.stringify(webLocalLibrary)); } catch {}
+    return Promise.resolve();
+  },
+  libraryFolderStatuses: () => Promise.resolve(webLocalLibrary.folders.map((f) => ({ path: f.path, exists: true }))),
   localTrackUrl: (id: string) => Promise.resolve(`${API_BASE}/api/stream?lid=${encodeURIComponent(id)}`),
   localArtBytes: () => Promise.resolve(null as any),
   remoteArtBytes: () => Promise.resolve(null as any),
   getCanvas: () => Promise.resolve(null as any),
 
   // Updates
-  updateState: () => Promise.resolve({ status: "idle", current: "1.1.1" } as any),
-  checkForUpdates: () => Promise.resolve(),
+  updateState: () => Promise.resolve({ status: "idle", current: "1.1.1 (Web)", installs: false } as any),
+  checkForUpdates: () => {
+    return Promise.resolve();
+  },
   installUpdate: () => Promise.resolve(),
   restartToUpdate: () => Promise.resolve(),
   onUpdateState: () => () => {},
 
   // Window controls
   windowMinimize: () => {},
-  windowMaximizeToggle: () => {},
+  windowMaximizeToggle: () => {
+    if (!document.fullscreenElement) {
+      void document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      void document.exitFullscreen().catch(() => {});
+    }
+  },
   windowClose: () => {},
-  isMaximized: () => Promise.resolve(false),
+  isMaximized: () => Promise.resolve(!!document.fullscreenElement),
   introDone: () => {},
   naturalScrolling: () => Promise.resolve(null),
   setOverlayChrome: () => Promise.resolve(),
-  setFullScreen: () => Promise.resolve(),
+  setFullScreen: (fsState?: boolean) => {
+    if (fsState === undefined) {
+      if (!document.fullscreenElement) {
+        return document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        return document.exitFullscreen().catch(() => {});
+      }
+    } else if (fsState && !document.fullscreenElement) {
+      return document.documentElement.requestFullscreen().catch(() => {});
+    } else if (!fsState && document.fullscreenElement) {
+      return document.exitFullscreen().catch(() => {});
+    }
+    return Promise.resolve();
+  },
   onMaximizeChange: () => () => {},
   onFullScreenChange: () => () => {},
 
-  // PiP
-  pipToggle: () => Promise.resolve(),
-  pipIsOpen: () => Promise.resolve(false),
-  pipClose: () => {},
+  // Picture-in-Picture / MiniPlayer
+  pipToggle: () => {
+    const isClosed = !pipWindowRef || pipWindowRef.closed;
+    if (isClosed) {
+      pipWindowRef = window.open(
+        `${window.location.origin}/?window=pip`,
+        "SoMusicMiniPlayer",
+        "width=340,height=370,left=100,top=100,resizable=yes"
+      );
+      pipOpenSubscribers.forEach((cb) => cb(true));
+      pipChannel?.postMessage({ type: "pip:open-change", payload: true });
+    } else {
+      pipWindowRef?.close();
+      pipWindowRef = null;
+      pipOpenSubscribers.forEach((cb) => cb(false));
+      pipChannel?.postMessage({ type: "pip:open-change", payload: false });
+    }
+    return Promise.resolve();
+  },
+  pipIsOpen: () => Promise.resolve(!!(pipWindowRef && !pipWindowRef.closed)),
+  pipClose: () => {
+    pipWindowRef?.close();
+    pipWindowRef = null;
+    pipOpenSubscribers.forEach((cb) => cb(false));
+    pipChannel?.postMessage({ type: "pip:open-change", payload: false });
+  },
   pipMinimize: () => {},
   pipSetCompact: () => {},
-  pipShowMain: () => {},
-  pipSendState: () => {},
-  pipSendCommand: () => {},
-  onPipState: () => () => {},
-  onPipCommand: () => () => {},
-  onPipOpenChange: () => () => {},
+  pipShowMain: () => {
+    window.focus();
+  },
+  pipSendState: (state: any) => {
+    pipChannel?.postMessage({ type: "pip:state", payload: state });
+  },
+  pipSendCommand: (cmd: any) => {
+    pipChannel?.postMessage({ type: "pip:command", payload: cmd });
+  },
+  onPipState: (cb: (state: any) => void) => {
+    pipStateSubscribers.add(cb);
+    return () => pipStateSubscribers.delete(cb);
+  },
+  onPipCommand: (cb: (cmd: any) => void) => {
+    pipCommandSubscribers.add(cb);
+    return () => pipCommandSubscribers.delete(cb);
+  },
+  onPipOpenChange: (cb: (open: boolean) => void) => {
+    pipOpenSubscribers.add(cb);
+    return () => pipOpenSubscribers.delete(cb);
+  },
   onPipNeedState: () => () => {},
   onPipCursorInside: () => () => {},
 
@@ -130,9 +274,7 @@ export const webBridge: ByTuneApi = {
         const data = await res.json();
         if (data !== null) return data;
       }
-    } catch {
-      /* fall back to localStorage */
-    }
+    } catch {}
     try {
       const v = localStorage.getItem(name);
       return v ? JSON.parse(v) : null;
@@ -147,32 +289,138 @@ export const webBridge: ByTuneApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-    } catch {
-      /* ignore */
-    }
+    } catch {}
     try {
       localStorage.setItem(name, JSON.stringify(data));
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   },
-  resetData: () => {
+  resetData: async () => {
     try {
       localStorage.clear();
     } catch {}
     return Promise.resolve();
   },
 
-  // Backups, Playlists, Spotify, Rooms
-  backupExport: () => Promise.resolve(),
-  playlistExport: () => Promise.resolve({ cancelled: true }),
-  playlistImport: () => Promise.resolve(null),
-  spotifyPublicPlaylist: () => Promise.reject(new Error("Spotify import available in desktop version")),
+  // Backups & Playlists
+  backupExport: async () => {
+    try {
+      const keys = ["settings", "library", "liked", "playlists", "history", "analytics"];
+      const backup: Record<string, unknown> = {
+        app: "SoMusic",
+        version: "1.1.1",
+        exportedAt: new Date().toISOString(),
+      };
+      for (const k of keys) {
+        try {
+          const val = localStorage.getItem(k);
+          if (val) backup[k] = JSON.parse(val);
+        } catch {}
+      }
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl;
+      a.download = `somusic-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(dlUrl);
+      return { path: a.download };
+    } catch (e: any) {
+      throw new Error(e.message || "Failed to export backup");
+    }
+  },
+
+  backupImport: async () => {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve({ restored: false });
+          return;
+        }
+        try {
+          const text = await file.text();
+          const doc = JSON.parse(text);
+          if (typeof doc !== "object" || !doc) throw new Error("Invalid backup format");
+          for (const [k, v] of Object.entries(doc)) {
+            if (k !== "app" && k !== "version" && k !== "exportedAt" && v !== undefined) {
+              try {
+                localStorage.setItem(k, JSON.stringify(v));
+                await fetch(`${API_BASE}/api/data/${encodeURIComponent(k)}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(v),
+                }).catch(() => {});
+              } catch {}
+            }
+          }
+          resolve({ restored: true, months: 6 });
+        } catch (err: any) {
+          reject(err);
+        }
+      };
+      input.click();
+    });
+  },
+
+  playlistExport: async (name: string, m3u8: string, json: string) => {
+    try {
+      const blob = new Blob([json || m3u8], { type: "application/json" });
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl;
+      a.download = `${name.replace(/[^a-zA-Z0-9_\s-]/g, "") || "playlist"}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(dlUrl);
+      return { path: a.download };
+    } catch {
+      return { cancelled: true };
+    }
+  },
+
+  playlistImport: async () => {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json,.m3u8,.m3u,.txt,.csv";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve(null);
+          return;
+        }
+        const text = await file.text();
+        const ext = file.name.split(".").pop()?.toLowerCase() || "json";
+        const name = file.name.replace(/\.[^.]+$/, "");
+        resolve({ name, ext, text });
+      };
+      input.click();
+    });
+  },
+
+  // Spotify Public Playlist Integration
+  spotifyPublicPlaylist: (url: string) => {
+    return fetch(`${API_BASE}/api/spotify/public-playlist?url=${encodeURIComponent(url)}`).then((r) => {
+      if (!r.ok) throw new Error("Could not load Spotify playlist");
+      return r.json();
+    });
+  },
   spotifyStatus: () => Promise.resolve({ connected: false } as any),
   spotifyConnect: () => Promise.resolve({ connected: false } as any),
   spotifyDisconnect: () => Promise.resolve({ connected: false } as any),
   spotifyPlaylists: () => Promise.resolve([]),
-  spotifyPlaylist: () => Promise.reject(new Error("Spotify not connected")),
+  spotifyPlaylist: (id: string) => {
+    return fetch(`${API_BASE}/api/spotify/public-playlist?id=${encodeURIComponent(id)}`).then((r) => {
+      if (!r.ok) throw new Error("Could not load Spotify playlist");
+      return r.json();
+    });
+  },
   matchSong: () => Promise.resolve(null),
 
   roomCurrent: () => Promise.resolve({ room: null, members: [] } as any),
@@ -194,9 +442,8 @@ export const webBridge: ByTuneApi = {
   localGainDb: () => Promise.resolve(null),
   getPodcast: () => Promise.resolve({ podcast: null, episodes: [] } as any),
   getPodcasts: () => Promise.resolve([]),
-  backupImport: () => Promise.resolve(),
 
-  // Auth (Persistent Guest & Profile state)
+  // Auth (Persistent Profile state)
   authGetSession: () => {
     let username = "Guest";
     let displayName = "Music Lover";
@@ -278,20 +525,100 @@ export const webBridge: ByTuneApi = {
   },
   onMediaAction: () => () => {},
 
-  // Files & Downloads
+  // Files, Folders & Downloads
   takeOpenedFiles: () => Promise.resolve([]),
   onFilesOpened: () => () => {},
   openedFiles: () => Promise.resolve([]),
   forgetOpenedFile: () => Promise.resolve([]),
-  defaultDownloadDir: () => Promise.resolve("/downloads"),
-  pickFolder: () => Promise.resolve(null),
+  defaultDownloadDir: () => Promise.resolve("Downloads (Browser)"),
+  pickFolder: async () => {
+    if ("showDirectoryPicker" in window) {
+      try {
+        const handle = await (window as any).showDirectoryPicker();
+        return handle.name || "Local Music Folder";
+      } catch (err: any) {
+        if (err.name === "AbortError") return null;
+      }
+    }
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.webkitdirectory = true as any;
+      (input as any).directory = true;
+      input.onchange = () => {
+        if (input.files && input.files.length > 0) {
+          const folderName = input.files[0].webkitRelativePath?.split("/")[0] || "Imported Music";
+          resolve(folderName);
+        } else {
+          resolve(null);
+        }
+      };
+      input.click();
+    });
+  },
   revealPath: () => Promise.resolve(),
   openPath: () => Promise.resolve(),
-  startDownload: () => Promise.resolve(),
+
+  startDownload: async (track: any) => {
+    try {
+      emitDownloadEvent({ event: "queued", id: track.id, track });
+      emitDownloadProgress({ id: track.id, progress: 0.1 });
+
+      const streamUrl = `${API_BASE}/api/stream?id=${encodeURIComponent(track.id)}`;
+      const res = await fetch(streamUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const contentLength = Number(res.headers.get("content-length")) || 0;
+      const reader = res.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+
+      emitDownloadEvent({ event: "started", id: track.id, track });
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+            if (contentLength > 0) {
+              const prog = Math.min(0.95, received / contentLength);
+              emitDownloadProgress({ id: track.id, progress: prog, downloaded: received, total: contentLength });
+            }
+          }
+        }
+      }
+
+      const audioBlob = new Blob(chunks, { type: "audio/mpeg" });
+      const blobUrl = URL.createObjectURL(audioBlob);
+
+      const safeTitle = `${track.artist} - ${track.title}`.replace(/[<>:"/\\|?*]+/g, "_");
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `${safeTitle}.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      emitDownloadProgress({ id: track.id, progress: 1, downloaded: received, total: received });
+      emitDownloadEvent({ event: "completed", id: track.id, path: `${safeTitle}.mp3`, track });
+      return;
+    } catch (err: any) {
+      emitDownloadEvent({ event: "failed", id: track.id, error: err.message, track });
+      throw err;
+    }
+  },
   cancelDownload: () => Promise.resolve(),
   downloadQueue: () => Promise.resolve([]),
-  onDownloadEvent: () => () => {},
-  onDownloadProgress: () => () => {},
+  onDownloadEvent: (cb: (e: any) => void) => {
+    downloadEventSubscribers.add(cb);
+    return () => downloadEventSubscribers.delete(cb);
+  },
+  onDownloadProgress: (cb: (p: any) => void) => {
+    downloadProgressSubscribers.add(cb);
+    return () => downloadProgressSubscribers.delete(cb);
+  },
 };
 
 // Expose directly to window
